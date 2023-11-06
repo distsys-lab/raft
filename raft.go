@@ -335,6 +335,25 @@ func (c *Config) validate() error {
 	return nil
 }
 
+type LeaderState struct { // added by @skoya76
+	RTTs map[uint64]time.Duration
+}
+
+func NewLeaderState() *LeaderState { // added by @skoya76
+    return &LeaderState{
+        RTTs: make(map[uint64]time.Duration),
+    }
+}
+
+func (ls *LeaderState) UpdateRTT(followerID uint64, rtt time.Duration) { // added by @skoya76
+    ls.RTTs[followerID] = rtt
+}
+
+func (ls *LeaderState) GetRTT(followerID uint64) (time.Duration, bool) { // added by @skoya76
+    rtt, ok := ls.RTTs[followerID]
+    return rtt, ok
+}
+
 type raft struct {
 	id uint64
 
@@ -427,6 +446,9 @@ type raft struct {
 	// current term. Those will be handled as fast as first log is committed in
 	// current term.
 	pendingReadIndexMessages []pb.Message
+
+	// added by @skoya76
+	leaderState LeaderState
 }
 
 func newRaft(c *Config) *raft {
@@ -674,11 +696,21 @@ func (r *raft) sendHeartbeat(to uint64, ctx []byte) {
 	// The leader MUST NOT forward the follower's commit to
 	// an unmatched index.
 	commit := min(r.prs.Progress[to].Match, r.raftLog.committed)
+	rtt := r.leaderState.GetRTT(to) // added by @skoya76
+
+	if !ok { // added by @skoya76
+        rtt = 0
+    }
+
+	r.logger.Debugf("Sending heartbeat to %x at term %d with RTT %v", to, r.Term, rtt) // added by @skoya76
+
 	m := pb.Message{
 		To:      to,
 		Type:    pb.MsgHeartbeat,
 		Commit:  commit,
 		Context: ctx,
+		Rtt: rtt, // added by @skoya76
+		SendTime: time.Now().UnixNano(), // added by @skoya76
 	}
 
 	r.send(m)
@@ -1522,6 +1554,12 @@ func stepLeader(r *raft, m pb.Message) error {
 			}
 		}
 	case pb.MsgHeartbeatResp:
+		// added by @skoya76
+  		sendTime := time.Unix(0, m.SendTime)
+    	rtt := time.Since(sendTime)
+    	r.leaderState.UpdateRTT(m.From, rtt)
+
+
 		pr.RecentActive = true
 		pr.MsgAppFlowPaused = false
 
@@ -1772,7 +1810,7 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 
 func (r *raft) handleHeartbeat(m pb.Message) {
 	r.raftLog.commitTo(m.Commit)
-	r.send(pb.Message{To: m.From, Type: pb.MsgHeartbeatResp, Context: m.Context})
+	r.send(pb.Message{To: m.From, Type: pb.MsgHeartbeatResp, Context: m.Context, Rtt: m.Rtt, SendTime: m.SendTime}) // fixed by @skoya76
 }
 
 func (r *raft) handleSnapshot(m pb.Message) {
