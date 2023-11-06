@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"go.etcd.io/raft/v3/confchange"
 	"go.etcd.io/raft/v3/quorum"
@@ -696,7 +697,7 @@ func (r *raft) sendHeartbeat(to uint64, ctx []byte) {
 	// The leader MUST NOT forward the follower's commit to
 	// an unmatched index.
 	commit := min(r.prs.Progress[to].Match, r.raftLog.committed)
-	rtt := r.leaderState.GetRTT(to) // added by @skoya76
+	rtt, ok := r.leaderState.GetRTT(to) // added by @skoya76
 
 	if !ok { // added by @skoya76
         rtt = 0
@@ -704,13 +705,15 @@ func (r *raft) sendHeartbeat(to uint64, ctx []byte) {
 
 	r.logger.Debugf("Sending heartbeat to %x at term %d with RTT %v", to, r.Term, rtt) // added by @skoya76
 
+	timestamp := time.Now().UnixNano() // added by @skoya76
+	rttInt64 := int64(rtt) // added by @skoya76
 	m := pb.Message{
 		To:      to,
 		Type:    pb.MsgHeartbeat,
 		Commit:  commit,
 		Context: ctx,
-		Rtt: rtt, // added by @skoya76
-		SendTime: time.Now().UnixNano(), // added by @skoya76
+		Rtt: &rttInt64, // added by @skoya76
+		SendTime: &timestamp, // added by @skoya76
 	}
 
 	r.send(m)
@@ -1555,7 +1558,7 @@ func stepLeader(r *raft, m pb.Message) error {
 		}
 	case pb.MsgHeartbeatResp:
 		// added by @skoya76
-  		sendTime := time.Unix(0, m.SendTime)
+  		sendTime := time.Unix(0, *m.SendTime)
     	rtt := time.Since(sendTime)
     	r.leaderState.UpdateRTT(m.From, rtt)
 
