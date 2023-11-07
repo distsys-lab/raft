@@ -336,28 +336,103 @@ func (c *Config) validate() error {
 	return nil
 }
 
-type LeaderState struct { // added by @skoya76
+// ============ added by @skoya76 ============
+type LeaderMetrics struct {
 	RTTs map[uint64]time.Duration
 }
 
-func NewLeaderState() *LeaderState { // added by @skoya76
-    return &LeaderState{
+func NewLeaderMetrics() *LeaderMetrics {
+    return &LeaderMetrics{
         RTTs: make(map[uint64]time.Duration),
     }
 }
 
-func (ls *LeaderState) UpdateRTT(followerID uint64, rtt time.Duration) { // added by @skoya76
+func (ls *LeaderMetrics) UpdateRTT(followerID uint64, rtt time.Duration) {
     if ls.RTTs == nil {
         ls.RTTs = make(map[uint64]time.Duration)
     }
     ls.RTTs[followerID] = rtt
 }
 
-
-func (ls *LeaderState) GetRTT(followerID uint64) (time.Duration, bool) { // added by @skoya76
+func (ls *LeaderMetrics) GetRTT(followerID uint64) (time.Duration, bool) {
     rtt, ok := ls.RTTs[followerID]
     return rtt, ok
 }
+
+type FollowerMetrics struct {
+    RTTQueue []time.Duration
+}
+
+func NewFollowerMetrics() *FollowerMetrics {
+    return &FollowerMetrics{
+        RTTQueue: make([]time.Duration, 0),
+    }
+}
+
+const MaxQueueSize = 1000 // TODO: Make it configurable in the future
+
+func (fm *FollowerMetrics) AddRTT(rtt time.Duration) {
+    fm.RTTQueue = append(fm.RTTQueue, rtt)
+    if len(fm.RTTQueue) > MaxQueueSize {
+        fm.RTTQueue = fm.RTTQueue[1:]
+    }
+}
+
+func (fm *FollowerMetrics) CalculateMeanRTT() time.Duration {
+    if len(fm.RTTQueue) == 0 {
+        return 0
+    }
+    var sum time.Duration
+    for _, rtt := range fm.RTTQueue {
+        sum += rtt
+    }
+    return sum / time.Duration(len(fm.RTTQueue))
+}
+
+func (fm *FollowerMetrics) CalculateStdDevRTT() time.Duration {
+    mean := fm.CalculateMeanRTT()
+    if len(fm.RTTQueue) < 2 {
+        return 0
+    }
+    var varianceSum float64
+    for _, rtt := range fm.RTTQueue {
+        variance := float64(rtt - mean)
+        varianceSum += variance * variance
+    }
+    variance := varianceSum / float64(len(fm.RTTQueue)-1)
+    return time.Duration(math.Sqrt(variance))
+}
+
+type NodeMetrics struct {
+    RTTMeans   map[uint64]time.Duration
+    RTTStdDevs map[uint64]time.Duration
+}
+
+func NewNodeMetrics() *NodeMetrics {
+    return &NodeMetrics{
+        RTTMeans:   make(map[uint64]time.Duration),
+        RTTStdDevs: make(map[uint64]time.Duration),
+    }
+}
+
+func (nm *NodeMetrics) UpdateRTTMean(replicaID uint64, mean time.Duration) {
+    nm.RTTMeans[replicaID] = mean
+}
+
+func (nm *NodeMetrics) UpdateRTTStdDev(replicaID uint64, stdDev time.Duration) {
+    nm.RTTStdDevs[replicaID] = stdDev
+}
+
+func (nm *NodeMetrics) GetRTTMean(replicaID uint64) (time.Duration, bool) {
+    mean, ok := nm.RTTMeans[replicaID]
+    return mean, ok
+}
+
+func (nm *NodeMetrics) GetRTTStdDev(replicaID uint64) (time.Duration, bool) {
+    stdDev, ok := nm.RTTStdDevs[replicaID]
+    return stdDev, ok
+}
+// ============ added by @skoya76 ============
 
 type raft struct {
 	id uint64
@@ -452,8 +527,11 @@ type raft struct {
 	// current term.
 	pendingReadIndexMessages []pb.Message
 
-	// added by @skoya76
-	leaderState LeaderState
+	// ============ added by @skoya76 ============
+	leaderMetrics LeaderMetrics
+	followerMetrics FollowerMetrics 
+	nodeMetrics NodeMetrics 
+	// ============ added by @skoya76 ============
 }
 
 func newRaft(c *Config) *raft {
@@ -483,6 +561,12 @@ func newRaft(c *Config) *raft {
 		disableProposalForwarding:   c.DisableProposalForwarding,
 		disableConfChangeValidation: c.DisableConfChangeValidation,
 		stepDownOnRemoval:           c.StepDownOnRemoval,
+
+		// ============ added by @skoya76 ============
+		leaderMetrics:   *NewLeaderMetrics(),
+        followerMetrics: *NewFollowerMetrics(),
+        nodeMetrics:     *NewNodeMetrics(),
+		// ============ added by @skoya76 ============
 	}
 
 	cfg, prs, err := confchange.Restore(confchange.Changer{
@@ -701,7 +785,7 @@ func (r *raft) sendHeartbeat(to uint64, ctx []byte) {
 	// The leader MUST NOT forward the follower's commit to
 	// an unmatched index.
 	commit := min(r.prs.Progress[to].Match, r.raftLog.committed)
-	rtt, ok := r.leaderState.GetRTT(to) // added by @skoya76
+	rtt, ok := r.leaderMetrics.GetRTT(to) // added by @skoya76
 
 	if !ok { // added by @skoya76
         rtt = 0
@@ -1564,7 +1648,7 @@ func stepLeader(r *raft, m pb.Message) error {
 		// added by @skoya76
   		sendTime := time.Unix(0, *m.SendTime)
     	rtt := time.Since(sendTime)
-    	r.leaderState.UpdateRTT(m.From, rtt)
+    	r.leaderMetrics.UpdateRTT(m.From, rtt)
 
 
 		pr.RecentActive = true
