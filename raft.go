@@ -347,8 +347,12 @@ func NewLeaderState() *LeaderState { // added by @skoya76
 }
 
 func (ls *LeaderState) UpdateRTT(followerID uint64, rtt time.Duration) { // added by @skoya76
+    if ls.RTTs == nil {
+        ls.RTTs = make(map[uint64]time.Duration)
+    }
     ls.RTTs[followerID] = rtt
 }
+
 
 func (ls *LeaderState) GetRTT(followerID uint64) (time.Duration, bool) { // added by @skoya76
     rtt, ok := ls.RTTs[followerID]
