@@ -369,12 +369,14 @@ const MaxQueueSize = 1000
 
 // FollowerMetrics maintains a fixed-size queue of RTT measurements and calculates the mean and standard deviation.
 type FollowerMetrics struct {
-    RTTQueue []time.Duration // Fixed-size queue of RTT measurements
-    Sum      time.Duration   // Sum of RTT measurements for calculating the mean
-    Mean     time.Duration   // Mean of RTT measurements
-    M2       float64         // Sum of squares of differences from the mean
-    Count    int             // Number of RTT measurements
+    RTTQueue     []time.Duration // Fixed-size queue of RTT measurements
+    DeviationSqs []float64       // Fixed-size queue of the squares of deviations
+    Sum          time.Duration   // Sum of RTT measurements for calculating the mean
+    Mean         time.Duration   // Mean of RTT measurements
+    M2           float64         // Sum of squares of differences from the mean
+    Count        int             // Number of RTT measurements
 }
+
 
 // NewFollowerMetrics initializes a new instance of FollowerMetrics.
 func NewFollowerMetrics() *FollowerMetrics {
@@ -385,11 +387,19 @@ func NewFollowerMetrics() *FollowerMetrics {
 
 // AddRTT adds a new RTT measurement and updates the metrics.
 func (fm *FollowerMetrics) AddRTT(rtt time.Duration) {
-    // If the queue reached its max size, remove the oldest RTT from the sum and queue.
+    var oldMean float64
+    if fm.Count > 0 {
+        oldMean = float64(fm.Sum) / float64(fm.Count)
+    }
+
+    // If the queue reached its max size, remove the oldest RTT and its deviation square from the sum and queues.
     if len(fm.RTTQueue) == MaxQueueSize {
         oldestRtt := fm.RTTQueue[0]
+        oldestDevSq := fm.DeviationSqs[0]
         fm.RTTQueue = fm.RTTQueue[1:]
+        fm.DeviationSqs = fm.DeviationSqs[1:]
         fm.Sum -= oldestRtt
+        fm.M2 -= oldestDevSq
         fm.Count--
     }
 
@@ -398,10 +408,22 @@ func (fm *FollowerMetrics) AddRTT(rtt time.Duration) {
     fm.Sum += rtt
     fm.Count++
 
-    // Update the mean and the sum of squares of differences from the mean (M2).
+    // Calculate the new mean and deviation for the new RTT.
     newMean := float64(fm.Sum) / float64(fm.Count)
-    delta := float64(rtt) - newMean
-    fm.M2 += delta * (float64(rtt) - float64(fm.Mean))
+    newDeviation := float64(rtt) - newMean
+    newDevSq := newDeviation * newDeviation
+
+    // Add the new deviation square to the queue.
+    fm.DeviationSqs = append(fm.DeviationSqs, newDevSq)
+
+    // Update M2.
+    if fm.Count > 1 {
+        fm.M2 += (newDeviation + oldMean - newMean) * (float64(rtt) - oldMean)
+    } else {
+        fm.M2 = newDevSq
+    }
+
+    // Update the mean.
     fm.Mean = time.Duration(newMean)
 }
 
