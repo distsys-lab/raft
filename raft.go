@@ -608,8 +608,8 @@ func newRaft(c *Config) *raft {
 
 		// ============ added by @skoya76 ============
 		leaderMetrics:   *NewLeaderMetrics(),
-        followerMetrics: *NewFollowerMetrics(),
-        nodeMetrics:     *NewNodeMetrics(),
+		followerMetrics: *NewFollowerMetrics(),
+		nodeMetrics:     *NewNodeMetrics(),
 		// ============ added by @skoya76 ============
 	}
 
@@ -1691,8 +1691,8 @@ func stepLeader(r *raft, m pb.Message) error {
 	case pb.MsgHeartbeatResp:
 		// added by @skoya76
   		sendTime := time.Unix(0, *m.SendTime)
-    	rtt := time.Since(sendTime)
-    	r.leaderMetrics.UpdateRTT(m.From, rtt)
+		rtt := time.Since(sendTime)
+		r.leaderMetrics.UpdateRTT(m.From, rtt)
 
 
 		pr.RecentActive = true
