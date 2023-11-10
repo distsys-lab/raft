@@ -384,34 +384,26 @@ func NewFollowerMetrics() *FollowerMetrics {
 }
 
 func (fm *FollowerMetrics) AddRTT(rtt time.Duration) {
-    // If the queue is at max size, remove the oldest RTT
     if len(fm.RTTQueue) == MaxQueueSize {
         oldestRtt := fm.RTTQueue[0]
         fm.RTTQueue = fm.RTTQueue[1:]
         fm.Sum -= oldestRtt
         fm.Count--
-        // Remove the oldest deviation square from M2 if DeviationSqs is at max size
+
         oldestDevSq := fm.DeviationSqs[0]
         fm.DeviationSqs = fm.DeviationSqs[1:]
         fm.M2 -= oldestDevSq
     }
 
-    // Add the new RTT to the queue and update the sum and count
     fm.RTTQueue = append(fm.RTTQueue, rtt)
     fm.Sum += rtt
     fm.Count++
-
-    // Calculate the new mean
     newMean := float64(fm.Sum) / float64(fm.Count)
     fm.Mean = time.Duration(newMean)
 
-    // Calculate deviation for the new RTT
     deviation := float64(rtt) - newMean
     deviationSq := deviation * deviation
-
-    // Update M2 with the new deviation square
     fm.M2 += deviationSq
-    // Add the new deviation square to DeviationSqs
     fm.DeviationSqs = append(fm.DeviationSqs, deviationSq)
 }
 
