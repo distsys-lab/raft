@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"go.etcd.io/raft/v3/confchange"
 	"go.etcd.io/raft/v3/quorum"
@@ -335,6 +336,128 @@ func (c *Config) validate() error {
 	return nil
 }
 
+// ============ added by @skoya76 ============
+// LeaderMetrics tracks the RTT measurements to each follower.
+type LeaderMetrics struct {
+	RTTs map[uint64]time.Duration // RTT measurements to each follower
+}
+
+// NewLeaderMetrics initializes a new instance of LeaderMetrics.
+func NewLeaderMetrics() *LeaderMetrics {
+    return &LeaderMetrics{
+        RTTs: make(map[uint64]time.Duration),
+    }
+}
+
+// UpdateRTT updates the RTT measurement for a specific follower.
+func (ls *LeaderMetrics) UpdateRTT(followerID uint64, rtt time.Duration) {
+    if ls.RTTs == nil {
+        ls.RTTs = make(map[uint64]time.Duration)
+    }
+    ls.RTTs[followerID] = rtt
+}
+
+// GetRTT retrieves the last recorded RTT for a specific follower.
+func (ls *LeaderMetrics) GetRTT(followerID uint64) (time.Duration, bool) {
+    rtt, ok := ls.RTTs[followerID]
+    return rtt, ok
+}
+
+// MaxQueueSize defines the maximum size of the RTT queue.
+// TODO: Make MaxQueueSize configurable in the future.
+const MaxQueueSize = 100
+
+type FollowerMetrics struct {
+    RTTQueue     []time.Duration // Fixed-size queue of RTT measurements
+    DeviationSqs []float64       // Fixed-size queue of the squares of deviations
+    Sum          time.Duration   // Sum of RTT measurements for calculating the mean
+    Mean         time.Duration   // Mean of RTT measurements
+    M2           float64         // Sum of squares of differences from the mean
+    Count        int             // Number of RTT measurements
+}
+
+// NewFollowerMetrics initializes a new instance of FollowerMetrics.
+func NewFollowerMetrics() *FollowerMetrics {
+    return &FollowerMetrics{
+        RTTQueue: make([]time.Duration, 0),
+    }
+}
+
+func (fm *FollowerMetrics) AddRTT(rtt time.Duration) {
+    if len(fm.RTTQueue) == MaxQueueSize {
+        oldestRtt := fm.RTTQueue[0]
+        fm.RTTQueue = fm.RTTQueue[1:]
+        fm.Sum -= oldestRtt
+        fm.Count--
+
+        oldestDevSq := fm.DeviationSqs[0]
+        fm.DeviationSqs = fm.DeviationSqs[1:]
+        fm.M2 -= oldestDevSq
+    }
+
+    fm.RTTQueue = append(fm.RTTQueue, rtt)
+    fm.Sum += rtt
+    fm.Count++
+    newMean := float64(fm.Sum) / float64(fm.Count)
+    fm.Mean = time.Duration(newMean)
+
+    deviation := float64(rtt) - newMean
+    deviationSq := deviation * deviation
+    fm.M2 += deviationSq
+    fm.DeviationSqs = append(fm.DeviationSqs, deviationSq)
+}
+
+// GetMean retrieves the current mean of RTT measurements.
+func (fm *FollowerMetrics) GetMean() time.Duration {
+    return fm.Mean
+}
+
+// GetStdDev calculates and retrieves the current standard deviation of RTT measurements.
+func (fm *FollowerMetrics) GetStdDev() time.Duration {
+    if fm.Count < 2 {
+        return 0
+    }
+    variance := fm.M2 / float64(fm.Count-1)
+    return time.Duration(math.Sqrt(variance))
+}
+
+// NodeMetrics holds the RTT means and standard deviations for each node.
+type NodeMetrics struct {
+    RTTMeans   map[uint64]time.Duration // RTT mean for each node
+    RTTStdDevs map[uint64]time.Duration // RTT standard deviation for each node
+}
+
+// NewNodeMetrics initializes a new instance of NodeMetrics.
+func NewNodeMetrics() *NodeMetrics {
+    return &NodeMetrics{
+        RTTMeans:   make(map[uint64]time.Duration),
+        RTTStdDevs: make(map[uint64]time.Duration),
+    }
+}
+
+// UpdateRTTMean updates the RTT mean for a specific node.
+func (nm *NodeMetrics) UpdateRTTMean(replicaID uint64, mean time.Duration) {
+    nm.RTTMeans[replicaID] = mean
+}
+
+// UpdateRTTStdDev updates the RTT standard deviation for a specific node.
+func (nm *NodeMetrics) UpdateRTTStdDev(replicaID uint64, stdDev time.Duration) {
+    nm.RTTStdDevs[replicaID] = stdDev
+}
+
+// GetRTTMean retrieves the last recorded RTT mean for a specific node.
+func (nm *NodeMetrics) GetRTTMean(replicaID uint64) (time.Duration, bool) {
+    mean, ok := nm.RTTMeans[replicaID]
+    return mean, ok
+}
+
+// GetRTTStdDev retrieves the last recorded RTT standard deviation for a specific node.
+func (nm *NodeMetrics) GetRTTStdDev(replicaID uint64) (time.Duration, bool) {
+    stdDev, ok := nm.RTTStdDevs[replicaID]
+    return stdDev, ok
+}
+// ============ added by @skoya76 ============
+
 type raft struct {
 	id uint64
 
@@ -427,6 +550,12 @@ type raft struct {
 	// current term. Those will be handled as fast as first log is committed in
 	// current term.
 	pendingReadIndexMessages []pb.Message
+
+	// ============ added by @skoya76 ============
+	leaderMetrics LeaderMetrics
+	followerMetrics FollowerMetrics 
+	nodeMetrics NodeMetrics 
+	// ============ added by @skoya76 ============
 }
 
 func newRaft(c *Config) *raft {
@@ -456,6 +585,12 @@ func newRaft(c *Config) *raft {
 		disableProposalForwarding:   c.DisableProposalForwarding,
 		disableConfChangeValidation: c.DisableConfChangeValidation,
 		stepDownOnRemoval:           c.StepDownOnRemoval,
+
+		// ============ added by @skoya76 ============
+		leaderMetrics:   *NewLeaderMetrics(),
+		followerMetrics: *NewFollowerMetrics(),
+		nodeMetrics:     *NewNodeMetrics(),
+		// ============ added by @skoya76 ============
 	}
 
 	cfg, prs, err := confchange.Restore(confchange.Changer{
@@ -674,11 +809,23 @@ func (r *raft) sendHeartbeat(to uint64, ctx []byte) {
 	// The leader MUST NOT forward the follower's commit to
 	// an unmatched index.
 	commit := min(r.prs.Progress[to].Match, r.raftLog.committed)
+	rtt, ok := r.leaderMetrics.GetRTT(to) // added by @skoya76
+
+	if !ok { // added by @skoya76
+        rtt = 0
+    }
+
+	r.logger.Debugf("Sending heartbeat to %x at term %d with RTT %v", to, r.Term, rtt) // added by @skoya76
+
+	timestamp := time.Now().UnixNano() // added by @skoya76
+	rttInt64 := int64(rtt) // added by @skoya76
 	m := pb.Message{
 		To:      to,
 		Type:    pb.MsgHeartbeat,
 		Commit:  commit,
 		Context: ctx,
+		Rtt: &rttInt64, // added by @skoya76
+		SendTime: &timestamp, // added by @skoya76
 	}
 
 	r.send(m)
@@ -1522,6 +1669,12 @@ func stepLeader(r *raft, m pb.Message) error {
 			}
 		}
 	case pb.MsgHeartbeatResp:
+		// added by @skoya76
+  		sendTime := time.Unix(0, *m.SendTime)
+		rtt := time.Since(sendTime)
+		r.leaderMetrics.UpdateRTT(m.From, rtt)
+
+
 		pr.RecentActive = true
 		pr.MsgAppFlowPaused = false
 
@@ -1771,9 +1924,29 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 }
 
 func (r *raft) handleHeartbeat(m pb.Message) {
-	r.raftLog.commitTo(m.Commit)
-	r.send(pb.Message{To: m.From, Type: pb.MsgHeartbeatResp, Context: m.Context})
+    r.raftLog.commitTo(m.Commit)
+    r.send(pb.Message{
+        To: m.From, 
+        Type: pb.MsgHeartbeatResp, 
+        Context: m.Context, 
+        Rtt: m.Rtt, 
+        SendTime: m.SendTime,
+    }) // fixed by @skoya76
+
+    // ============ added by @skoya76 ============
+    if m.Rtt != nil {
+        r.followerMetrics.AddRTT(time.Duration(*m.Rtt))
+        newMean := r.followerMetrics.GetMean()
+        newStdDev := r.followerMetrics.GetStdDev()
+
+        r.nodeMetrics.UpdateRTTMean(m.From, newMean)
+        r.nodeMetrics.UpdateRTTStdDev(m.From, newStdDev)
+
+        r.logger.Debugf("Updated metrics for follower %d - Mean RTT: %v, StdDev RTT: %v", m.From, newMean, newStdDev)
+    }
+    // ============ added by @skoya76 ============
 }
+
 
 func (r *raft) handleSnapshot(m pb.Message) {
 	// MsgSnap messages should always carry a non-nil Snapshot, but err on the
