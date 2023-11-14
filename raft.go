@@ -1943,6 +1943,7 @@ func (r *raft) handleHeartbeat(m pb.Message) {
         r.nodeMetrics.UpdateRTTStdDev(m.From, newStdDev)
 
         r.logger.Debugf("Updated metrics for follower %d - Mean RTT: %v, StdDev RTT: %v", m.From, newMean, newStdDev)
+		r.randomizedElectionTimeout = int(newMean.Milliseconds() + 2*newStdDev.Milliseconds())
     }
     // ============ added by @skoya76 ============
 }
