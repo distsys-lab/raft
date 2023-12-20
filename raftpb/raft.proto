@@ -108,6 +108,7 @@ message Message {
 	// added by @skoya76
 	optional int64 rtt = 15;
 	optional int64 send_time = 16;
+	optional int64 sequence_id = 17;
 }
 
 message HardState {

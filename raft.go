@@ -822,6 +822,9 @@ func (r *raft) sendHeartbeat(to uint64, ctx []byte) {
         rtt = 0
     }
 
+	seqID := r.heartbeatStates[to].SequenceId
+	seqIdInt64 := int64(seqID)
+
 	r.logger.Debugf("Sending heartbeat to %x at term %d with RTT %v", to, r.Term, rtt) // added by @skoya76
 
 	timestamp := time.Now().UnixNano() // added by @skoya76
@@ -833,6 +836,7 @@ func (r *raft) sendHeartbeat(to uint64, ctx []byte) {
 		Context: ctx,
 		Rtt: &rttInt64, // added by @skoya76
 		SendTime: &timestamp, // added by @skoya76
+		SequenceId: &seqIdInt64, // added by @skoya76
 	}
 
 	r.send(m)
@@ -1011,9 +1015,10 @@ func (r *raft) tickHeartbeat() {
 		hbState.Elapsed++
 
 		if hbState.Elapsed >= hbState.Timeout {
+			hbState.Elapsed = 0
+			hbState.SequenceId ++
 			r.sendHeartbeat(id, []byte{})
 			r.logger.Debugf("Heartbeat sent from %d to %d", r.id, id)
-			hbState.Elapsed = 0
 		}
 	}
 
@@ -1973,6 +1978,9 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 		r.randomizedElectionTimeout = int(newMean.Milliseconds() + 2*newStdDev.Milliseconds()) // Update election timeout
 		r.logger.Debugf("Updated metrics for follower %d - Mean RTT: %v, StdDev RTT: %v, Randomized Election Timeout: %d", m.From, newMean, newStdDev, r.randomizedElectionTimeout)
     }
+
+	r.logger.Debugf("Received heartbeat with SequenceId %d from %d", *m.SequenceId, m.From)
+
     // ============ added by @skoya76 ============
 }
 
