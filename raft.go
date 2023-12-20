@@ -425,26 +425,43 @@ func (fm *FollowerMetrics) GetStdDev() time.Duration {
     return time.Duration(math.Sqrt(variance))
 }
 
-// UpdateRTTMean updates the RTT mean for a specific follower.
-func (fm *FollowerMetrics) UpdateRTTMean(followerID uint64, mean time.Duration) {
-    fm.RTTMeans[followerID] = mean
+// UpdateRTTMean updates the RTT mean for a specific node.
+func (fm *FollowerMetrics) UpdateRTTMean(nodeID uint64, mean time.Duration) {
+    fm.RTTMeans[nodeID] = mean
 }
 
-// UpdateRTTStdDev updates the RTT standard deviation for a specific follower.
-func (fm *FollowerMetrics) UpdateRTTStdDev(followerID uint64, stdDev time.Duration) {
-    fm.RTTStdDevs[followerID] = stdDev
+// UpdateRTTStdDev updates the RTT standard deviation for a specific node.
+func (fm *FollowerMetrics) UpdateRTTStdDev(nodeID uint64, stdDev time.Duration) {
+    fm.RTTStdDevs[nodeID] = stdDev
 }
 
-// GetRTTMean retrieves the last recorded RTT mean for a specific follower.
-func (fm *FollowerMetrics) GetRTTMean(followerID uint64) (time.Duration, bool) {
-    mean, ok := fm.RTTMeans[followerID]
+// GetRTTMean retrieves the last recorded RTT mean for a specific node.
+func (fm *FollowerMetrics) GetRTTMean(nodeID uint64) (time.Duration, bool) {
+    mean, ok := fm.RTTMeans[nodeID]
     return mean, ok
 }
 
-// GetRTTStdDev retrieves the last recorded RTT standard deviation for a specific follower.
-func (fm *FollowerMetrics) GetRTTStdDev(followerID uint64) (time.Duration, bool) {
-    stdDev, ok := fm.RTTStdDevs[followerID]
+// GetRTTStdDev retrieves the last recorded RTT standard deviation for a specific node.
+func (fm *FollowerMetrics) GetRTTStdDev(nodeID uint64) (time.Duration, bool) {
+    stdDev, ok := fm.RTTStdDevs[nodeID]
     return stdDev, ok
+}
+
+type HeartbeatState struct {
+    Elapsed    int
+    Timeout    int
+    SequenceId uint64
+}
+
+func (r *raft) initializeHeartbeatStates(followerIDs []uint64, defaultTimeout int) {
+	r.heartbeatStates = make(map[uint64]*HeartbeatState)
+	for _, id := range followerIDs {
+		r.heartbeatStates[id] = &HeartbeatState{
+			Elapsed:    0,
+			Timeout:    defaultTimeout,
+			SequenceId: 0,
+		}
+	}
 }
 // ============ added by @skoya76 ============
 
@@ -544,6 +561,7 @@ type raft struct {
 	// ============ added by @skoya76 ============
 	leaderMetrics *LeaderMetrics
 	followerMetrics *FollowerMetrics 
+	heartbeatStates map[uint64]*HeartbeatState
 	// ============ added by @skoya76 ============
 }
 
@@ -576,8 +594,9 @@ func newRaft(c *Config) *raft {
 		stepDownOnRemoval:           c.StepDownOnRemoval,
 
 		// ============ added by @skoya76 ============
-		leaderMetrics:   NewLeaderMetrics(),
-		followerMetrics: NewFollowerMetrics(),
+		leaderMetrics:               NewLeaderMetrics(),
+		followerMetrics:             NewFollowerMetrics(),
+		heartbeatStates:             make(map[uint64]*HeartbeatState),
 		// ============ added by @skoya76 ============
 	}
 
@@ -968,7 +987,7 @@ func (r *raft) tickElection() {
 
 // tickHeartbeat is run by leaders to send a MsgBeat after r.heartbeatTimeout.
 func (r *raft) tickHeartbeat() {
-	r.heartbeatElapsed++
+	//r.heartbeatElapsed++
 	r.electionElapsed++
 
 	if r.electionElapsed >= r.electionTimeout {
@@ -988,12 +1007,22 @@ func (r *raft) tickHeartbeat() {
 		return
 	}
 
-	if r.heartbeatElapsed >= r.heartbeatTimeout {
-		r.heartbeatElapsed = 0
-		if err := r.Step(pb.Message{From: r.id, Type: pb.MsgBeat}); err != nil {
-			r.logger.Debugf("error occurred during checking sending heartbeat: %v", err)
+	for id, hbState := range r.heartbeatStates {
+		hbState.Elapsed++
+
+		if hbState.Elapsed >= hbState.Timeout {
+			r.sendHeartbeat(id, []byte{})
+			r.logger.Debugf("Heartbeat sent from %d to %d", r.id, id)
+			hbState.Elapsed = 0
 		}
 	}
+
+	//if r.heartbeatElapsed >= r.heartbeatTimeout {
+	//	r.heartbeatElapsed = 0
+	//	if err := r.Step(pb.Message{From: r.id, Type: pb.MsgBeat}); err != nil {
+	//		r.logger.Debugf("error occurred during checking sending heartbeat: %v", err)
+	//	}
+	//}
 }
 
 func (r *raft) becomeFollower(term uint64, lead uint64) {
@@ -1070,6 +1099,17 @@ func (r *raft) becomeLeader() {
 	// so the preceding log append does not count against the uncommitted log
 	// quota of the new leader. In other words, after the call to appendEntry,
 	// r.uncommittedSize is still 0.
+
+	// ============ added by @skoya76 ============
+	followerIDs := make([]uint64, 0, len(r.prs.Progress))
+	for id := range r.prs.Progress {
+		if id != r.id {
+			followerIDs = append(followerIDs, id)
+		}
+	}
+	r.initializeHeartbeatStates(followerIDs, r.heartbeatTimeout)
+	// ============ added by @skoya76 ============
+
 	r.logger.Infof("%x became leader at term %d", r.id, r.Term)
 }
 
