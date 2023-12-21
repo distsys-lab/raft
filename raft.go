@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"log"
 
 	"go.etcd.io/raft/v3/confchange"
 	"go.etcd.io/raft/v3/quorum"
@@ -478,19 +479,36 @@ func (r *raft) initializeHeartbeatStates(followerIDs []uint64, defaultTimeout in
 }
 
 func (fm *FollowerMetrics) CalculateHeartbeatInterval(electionTimeout int) int {
-
     firstSeqId := fm.SequenceIdQueue[0]
     lastSeqId := fm.SequenceIdQueue[len(fm.SequenceIdQueue)-1]
     expectedPackets := lastSeqId - firstSeqId + 1
     receivedPackets := uint64(len(fm.SequenceIdQueue))
     packetLossRate := 1.0 - (float64(receivedPackets) / float64(expectedPackets))
 
-    logTerm := math.Log(1 - ReachabilityGoal) / math.Log(packetLossRate)
-    ceilLogTerm := math.Ceil(logTerm)
-    heartbeatInterval := int(math.Floor(float64(electionTimeout) / ceilLogTerm))
+    // パケットロス率のログを出力
+    log.Printf("Debug: Packet loss rate calculated as %v", packetLossRate)
+
+    var ceilLogTerm float64
+    if packetLossRate <= 0 {
+        // パケットロス率が0の場合、ceilLogTermを1に設定
+        ceilLogTerm = 1
+    } else {
+        logTerm := math.Log(1 - ReachabilityGoal) / math.Log(packetLossRate)
+        ceilLogTerm = math.Ceil(logTerm)
+
+        // logTerm と ceilLogTerm のログを出力
+        log.Printf("Debug: Log term calculated as %v", logTerm)
+        log.Printf("Debug: Ceil log term calculated as %v", ceilLogTerm)
+    }
+
+    heartbeatInterval := int(math.Floor(float64(electionTimeout) / (ceilLogTerm + 1) )) // + 1 は変動を考慮
+
+    // 最終的なハートビート間隔のログを出力
+    log.Printf("Debug: Calculated heartbeat interval as %v", heartbeatInterval)
 
     return heartbeatInterval
 }
+
 
 // ============ added by @skoya76 ============
 
