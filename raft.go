@@ -478,38 +478,32 @@ func (r *raft) initializeHeartbeatStates(followerIDs []uint64, defaultTimeout in
 	}
 }
 
-func (fm *FollowerMetrics) CalculateHeartbeatInterval(electionTimeout int) int {
+func (fm *FollowerMetrics) CalculateHeartbeatInterval(electionTimeout int) int64 {
     firstSeqId := fm.SequenceIdQueue[0]
     lastSeqId := fm.SequenceIdQueue[len(fm.SequenceIdQueue)-1]
     expectedPackets := lastSeqId - firstSeqId + 1
     receivedPackets := uint64(len(fm.SequenceIdQueue))
     packetLossRate := 1.0 - (float64(receivedPackets) / float64(expectedPackets))
 
-    // パケットロス率のログを出力
     log.Printf("Debug: Packet loss rate calculated as %v", packetLossRate)
 
     var ceilLogTerm float64
     if packetLossRate <= 0 {
-        // パケットロス率が0の場合、ceilLogTermを1に設定
         ceilLogTerm = 1
     } else {
         logTerm := math.Log(1 - ReachabilityGoal) / math.Log(packetLossRate)
         ceilLogTerm = math.Ceil(logTerm)
 
-        // logTerm と ceilLogTerm のログを出力
         log.Printf("Debug: Log term calculated as %v", logTerm)
         log.Printf("Debug: Ceil log term calculated as %v", ceilLogTerm)
     }
 
-    heartbeatInterval := int(math.Floor(float64(electionTimeout) / (ceilLogTerm + 1) )) // + 1 は変動を考慮
+    heartbeatInterval := int64(math.Floor(float64(electionTimeout) / (ceilLogTerm + 1) ))
 
-    // 最終的なハートビート間隔のログを出力
     log.Printf("Debug: Calculated heartbeat interval as %v", heartbeatInterval)
 
     return heartbeatInterval
 }
-
-
 // ============ added by @skoya76 ============
 
 type raft struct {
@@ -1754,6 +1748,11 @@ func stepLeader(r *raft, m pb.Message) error {
 		rtt := time.Since(sendTime)
 		r.leaderMetrics.UpdateRTT(m.From, rtt)
 
+		if m.HeartbeatInterval != nil {
+        	heartbeatInterval := *m.HeartbeatInterval
+        	r.logger.Debugf("Received heartbeat response from %d with interval %d", m.From, heartbeatInterval)
+    	}
+
 
 		pr.RecentActive = true
 		pr.MsgAppFlowPaused = false
@@ -2005,14 +2004,7 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 
 func (r *raft) handleHeartbeat(m pb.Message) {
     r.raftLog.commitTo(m.Commit)
-    r.send(pb.Message{
-        To: m.From, 
-        Type: pb.MsgHeartbeatResp, 
-        Context: m.Context, 
-        Rtt: m.Rtt, 
-        SendTime: m.SendTime,
-    }) // fixed by @skoya76
-
+	var heartbeatInterval int64
     // ============ added by @skoya76 ============
     if m.Rtt != nil {
         r.followerMetrics.AddRTT(time.Duration(*m.Rtt))
@@ -2036,13 +2028,19 @@ func (r *raft) handleHeartbeat(m pb.Message) {
             //firstSeqId := seqIds[0]
             //lastSeqId := seqIds[len(seqIds)-1]
             //r.logger.Debugf("Received heartbeat with SequenceId %d from %d, Queue Head: %d, Queue Tail: %d", sequenceId, m.From, firstSeqId, lastSeqId)
-			heartbeatInterval := r.followerMetrics.CalculateHeartbeatInterval(r.randomizedElectionTimeout)
-			r.logger.Debugf("Calculated heartbeat interval: %d", heartbeatInterval)
+			heartbeatInterval = r.followerMetrics.CalculateHeartbeatInterval(r.randomizedElectionTimeout)
         } else {
             r.logger.Debugf("Received heartbeat with SequenceId %d from %d, but the SequenceId queue is empty", sequenceId, m.From)
         }
     }
-
+    r.send(pb.Message{
+        To: m.From, 
+        Type: pb.MsgHeartbeatResp, 
+        Context: m.Context, 
+        Rtt: m.Rtt, 
+        SendTime: m.SendTime,
+        HeartbeatInterval: &heartbeatInterval,
+    })
     // ============ added by @skoya76 ============
 }
 

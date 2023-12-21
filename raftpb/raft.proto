@@ -109,6 +109,7 @@ message Message {
 	optional int64 rtt = 15;
 	optional int64 send_time = 16;
 	optional int64 sequence_id = 17;
+	optional int64 heartbeat_interval = 18;
 }
 
 message HardState {
