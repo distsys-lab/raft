@@ -485,6 +485,10 @@ func (fm *FollowerMetrics) CalculateHeartbeatInterval(electionTimeout int) int64
     receivedPackets := uint64(len(fm.SequenceIdQueue))
     packetLossRate := 1.0 - (float64(receivedPackets) / float64(expectedPackets))
 
+	log.Printf("Debug: First Sequence ID: %d", firstSeqId)
+    log.Printf("Debug: Last Sequence ID: %d", lastSeqId)
+    log.Printf("Debug: Expected Packets: %d", expectedPackets)
+    log.Printf("Debug: Received Packets: %d", receivedPackets)
     log.Printf("Debug: Packet loss rate calculated as %v", packetLossRate)
 
     var ceilLogTerm float64
@@ -1751,6 +1755,10 @@ func stepLeader(r *raft, m pb.Message) error {
 		if m.HeartbeatInterval != nil {
         	heartbeatInterval := *m.HeartbeatInterval
         	r.logger.Debugf("Received heartbeat response from %d with interval %d", m.From, heartbeatInterval)
+
+			//if _, exists := r.heartbeatStates[m.From]; exists {
+            //	r.heartbeatStates[m.From].Timeout = int(heartbeatInterval)
+        	//}
     	}
 
 
