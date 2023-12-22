@@ -376,8 +376,6 @@ type FollowerMetrics struct {
     Mean         time.Duration   // Mean of RTT measurements
     M2           float64         // Sum of squares of differences from the mean
     Count        int             // Number of RTT measurements
-	RTTMeans     map[uint64]time.Duration // RTT mean for each node
-    RTTStdDevs   map[uint64]time.Duration // RTT standard deviation for each node
 
 	SequenceIdQueue []uint64
 }
@@ -386,8 +384,6 @@ type FollowerMetrics struct {
 func NewFollowerMetrics() *FollowerMetrics {
     return &FollowerMetrics{
         RTTQueue:   make([]time.Duration, 0),
-        RTTMeans:   make(map[uint64]time.Duration),
-        RTTStdDevs: make(map[uint64]time.Duration),
 
 		SequenceIdQueue: make([]uint64, 0),
     }
@@ -429,28 +425,6 @@ func (fm *FollowerMetrics) GetStdDev() time.Duration {
     }
     variance := fm.M2 / float64(fm.Count-1)
     return time.Duration(math.Sqrt(variance))
-}
-
-// UpdateRTTMean updates the RTT mean for a specific node.
-func (fm *FollowerMetrics) UpdateRTTMean(nodeID uint64, mean time.Duration) {
-    fm.RTTMeans[nodeID] = mean
-}
-
-// UpdateRTTStdDev updates the RTT standard deviation for a specific node.
-func (fm *FollowerMetrics) UpdateRTTStdDev(nodeID uint64, stdDev time.Duration) {
-    fm.RTTStdDevs[nodeID] = stdDev
-}
-
-// GetRTTMean retrieves the last recorded RTT mean for a specific node.
-func (fm *FollowerMetrics) GetRTTMean(nodeID uint64) (time.Duration, bool) {
-    mean, ok := fm.RTTMeans[nodeID]
-    return mean, ok
-}
-
-// GetRTTStdDev retrieves the last recorded RTT standard deviation for a specific node.
-func (fm *FollowerMetrics) GetRTTStdDev(nodeID uint64) (time.Duration, bool) {
-    stdDev, ok := fm.RTTStdDevs[nodeID]
-    return stdDev, ok
 }
 
 func (fm *FollowerMetrics) AddSequenceId(sequenceId uint64) {
@@ -2018,9 +1992,6 @@ func (r *raft) handleHeartbeat(m pb.Message) {
         r.followerMetrics.AddRTT(time.Duration(*m.Rtt))
         newMean := r.followerMetrics.GetMean()
         newStdDev := r.followerMetrics.GetStdDev()
-
-        r.followerMetrics.UpdateRTTMean(m.From, newMean)
-        r.followerMetrics.UpdateRTTStdDev(m.From, newStdDev)
 
 		r.randomizedElectionTimeout = int(newMean.Milliseconds() + 2*newStdDev.Milliseconds()) // Update election timeout
 		r.logger.Debugf("Updated metrics for follower %d - Mean RTT: %v, StdDev RTT: %v, Randomized Election Timeout: %d", m.From, newMean, newStdDev, r.randomizedElectionTimeout)
