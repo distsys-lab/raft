@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 	"log"
+	"strconv"
 
 	"go.etcd.io/raft/v3/confchange"
 	"go.etcd.io/raft/v3/quorum"
@@ -383,9 +384,13 @@ type FollowerMetrics struct {
 // NewFollowerMetrics initializes a new instance of FollowerMetrics.
 func NewFollowerMetrics() *FollowerMetrics {
     return &FollowerMetrics{
-        RTTQueue:   make([]time.Duration, 0),
-
-		SequenceIdQueue: make([]uint64, 0),
+        RTTQueue:        make([]time.Duration, 0),
+        DeviationSqs:    make([]float64, 0),
+        Sum:             0,
+        Mean:            0,
+        M2:              0.0,
+        Count:           0,
+        SequenceIdQueue: make([]uint64, 0),
     }
 }
 
@@ -458,6 +463,12 @@ func (fm *FollowerMetrics) CalculateHeartbeatInterval(electionTimeout int) int64
     expectedPackets := lastSeqId - firstSeqId + 1
     receivedPackets := uint64(len(fm.SequenceIdQueue))
     packetLossRate := 1.0 - (float64(receivedPackets) / float64(expectedPackets))
+
+    var seqIdStrs []string
+    for _, seqId := range fm.SequenceIdQueue {
+        seqIdStrs = append(seqIdStrs, strconv.FormatUint(seqId, 10))
+    }
+    log.Printf("Debug: SequenceIdQueue Contents: [%s]", strings.Join(seqIdStrs, ", "))
 
 	log.Printf("Debug: First Sequence ID: %d", firstSeqId)
     log.Printf("Debug: Last Sequence ID: %d", lastSeqId)
@@ -1055,6 +1066,9 @@ func (r *raft) becomeFollower(term uint64, lead uint64) {
 	r.tick = r.tickElection
 	r.lead = lead
 	r.state = StateFollower
+
+	r.followerMetrics = NewFollowerMetrics() // added by @skoya76
+
 	r.logger.Infof("%x became follower at term %d", r.id, r.Term)
 }
 
@@ -1730,9 +1744,9 @@ func stepLeader(r *raft, m pb.Message) error {
         	heartbeatInterval := *m.HeartbeatInterval
         	r.logger.Debugf("Received heartbeat response from %d with interval %d", m.From, heartbeatInterval)
 
-			//if _, exists := r.heartbeatStates[m.From]; exists {
-            //	r.heartbeatStates[m.From].Timeout = int(heartbeatInterval)
-        	//}
+			if _, exists := r.heartbeatStates[m.From]; exists {
+            	r.heartbeatStates[m.From].Timeout = int(heartbeatInterval)
+        	}
     	}
 
 
@@ -2007,6 +2021,7 @@ func (r *raft) handleHeartbeat(m pb.Message) {
             //firstSeqId := seqIds[0]
             //lastSeqId := seqIds[len(seqIds)-1]
             //r.logger.Debugf("Received heartbeat with SequenceId %d from %d, Queue Head: %d, Queue Tail: %d", sequenceId, m.From, firstSeqId, lastSeqId)
+			log.Printf("Debug: Current leader is %d", r.lead)
 			heartbeatInterval = r.followerMetrics.CalculateHeartbeatInterval(r.randomizedElectionTimeout)
         } else {
             r.logger.Debugf("Received heartbeat with SequenceId %d from %d, but the SequenceId queue is empty", sequenceId, m.From)
