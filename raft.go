@@ -370,6 +370,11 @@ func (ls *LeaderMetrics) GetRTT(followerID uint64) (time.Duration, bool) {
 const MaxQueueSize = 100
 const ReachabilityGoal = 0.99
 
+type SequenceIdInfo struct {
+    ID        uint64
+    Timestamp time.Time
+}
+
 type FollowerMetrics struct {
     RTTQueue     []time.Duration // Fixed-size queue of RTT measurements
     DeviationSqs []float64       // Fixed-size queue of the squares of deviations
@@ -378,7 +383,8 @@ type FollowerMetrics struct {
     M2           float64         // Sum of squares of differences from the mean
     Count        int             // Number of RTT measurements
 
-	SequenceIdQueue []uint64
+	SequenceIdQueue []SequenceIdInfo
+
 }
 
 // NewFollowerMetrics initializes a new instance of FollowerMetrics.
@@ -390,7 +396,7 @@ func NewFollowerMetrics() *FollowerMetrics {
         Mean:            0,
         M2:              0.0,
         Count:           0,
-        SequenceIdQueue: make([]uint64, 0),
+		SequenceIdQueue []SequenceIdInfo
     }
 }
 
@@ -432,14 +438,35 @@ func (fm *FollowerMetrics) GetStdDev() time.Duration {
     return time.Duration(math.Sqrt(variance))
 }
 
-func (fm *FollowerMetrics) AddSequenceId(sequenceId uint64) {
-    fm.SequenceIdQueue = append(fm.SequenceIdQueue, sequenceId)
+func (fm *FollowerMetrics) AddSequenceIdInfo(id uint64, timestamp time.Time) {
+    info := SequenceIdInfo{
+        ID:        id,
+        Timestamp: timestamp,
+    }
 
+    // 適切な位置にinfoを挿入
+    inserted := false
+    for i := len(fm.SequenceIdQueue) - 1; i >= 0; i-- {
+        if info.Timestamp.After(fm.SequenceIdQueue[i].Timestamp) {
+            fm.SequenceIdQueue = append(fm.SequenceIdQueue[:i+1], append([]SequenceIdInfo{info}, fm.SequenceIdQueue[i+1:]...)...)
+            inserted = true
+            break
+        }
+    }
+
+    // 先頭に挿入する場合
+    if !inserted {
+        fm.SequenceIdQueue = append([]SequenceIdInfo{info}, fm.SequenceIdQueue...)
+    }
+
+    // キューのサイズがMaxQueueSizeを超える場合、最初の要素を削除
     if len(fm.SequenceIdQueue) > MaxQueueSize {
         fm.SequenceIdQueue = fm.SequenceIdQueue[1:]
     }
 }
 
+
+// リーダーが持つハートビート情報
 type HeartbeatState struct {
     Elapsed    int
     Timeout    int
@@ -457,21 +484,28 @@ func (r *raft) initializeHeartbeatStates(followerIDs []uint64, defaultTimeout in
 	}
 }
 
+func calculatePacketCount(firstID, lastID uint64) uint64 {
+    if lastID >= firstID {
+        return lastID - firstID + 1
+    }
+    return (math.MaxUint64 - firstID) + lastID + 2
+}
+
 func (fm *FollowerMetrics) CalculateHeartbeatInterval(electionTimeout int) int64 {
-    firstSeqId := fm.SequenceIdQueue[0]
-    lastSeqId := fm.SequenceIdQueue[len(fm.SequenceIdQueue)-1]
-    expectedPackets := lastSeqId - firstSeqId + 1
+    firstSeqInfo := fm.SequenceIdQueue[0]
+    lastSeqInfo := fm.SequenceIdQueue[len(fm.SequenceIdQueue)-1]
+    expectedPackets := calculatePacketCount(firstSeqInfo.ID, lastSeqInfo.ID)
     receivedPackets := uint64(len(fm.SequenceIdQueue))
     packetLossRate := 1.0 - (float64(receivedPackets) / float64(expectedPackets))
 
     var seqIdStrs []string
-    for _, seqId := range fm.SequenceIdQueue {
-        seqIdStrs = append(seqIdStrs, strconv.FormatUint(seqId, 10))
+    for _, seqInfo := range fm.SequenceIdQueue {
+        seqIdStrs = append(seqIdStrs, fmt.Sprintf("%d (Timestamp: %v)", seqInfo.ID, seqInfo.Timestamp))
     }
     log.Printf("Debug: SequenceIdQueue Contents: [%s]", strings.Join(seqIdStrs, ", "))
 
-	log.Printf("Debug: First Sequence ID: %d", firstSeqId)
-    log.Printf("Debug: Last Sequence ID: %d", lastSeqId)
+    log.Printf("Debug: First Sequence ID: %d (Timestamp: %v)", firstSeqInfo.ID, firstSeqInfo.Timestamp)
+    log.Printf("Debug: Last Sequence ID: %d (Timestamp: %v)", lastSeqInfo.ID, lastSeqInfo.Timestamp)
     log.Printf("Debug: Expected Packets: %d", expectedPackets)
     log.Printf("Debug: Received Packets: %d", receivedPackets)
     log.Printf("Debug: Packet loss rate calculated as %v", packetLossRate)
@@ -487,7 +521,7 @@ func (fm *FollowerMetrics) CalculateHeartbeatInterval(electionTimeout int) int64
         log.Printf("Debug: Ceil log term calculated as %v", ceilLogTerm)
     }
 
-    heartbeatInterval := int64(math.Floor(float64(electionTimeout) / (ceilLogTerm + 1) ))
+    heartbeatInterval := int64(math.Floor(float64(electionTimeout) / (ceilLogTerm + 1)))
 
     log.Printf("Debug: Calculated heartbeat interval as %v", heartbeatInterval)
 
@@ -2000,33 +2034,30 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 
 func (r *raft) handleHeartbeat(m pb.Message) {
     r.raftLog.commitTo(m.Commit)
-	var heartbeatInterval int64
-    // ============ added by @skoya76 ============
+    var heartbeatInterval int64
+
     if m.Rtt != nil {
         r.followerMetrics.AddRTT(time.Duration(*m.Rtt))
         newMean := r.followerMetrics.GetMean()
         newStdDev := r.followerMetrics.GetStdDev()
 
-		r.randomizedElectionTimeout = int(newMean.Milliseconds() + 2*newStdDev.Milliseconds()) // Update election timeout
-		r.logger.Debugf("Updated metrics for follower %d - Mean RTT: %v, StdDev RTT: %v, Randomized Election Timeout: %d", m.From, newMean, newStdDev, r.randomizedElectionTimeout)
+        r.randomizedElectionTimeout = int(newMean.Milliseconds() + 2*newStdDev.Milliseconds())
+        r.logger.Debugf("Updated metrics for follower %d - Mean RTT: %v, StdDev RTT: %v, Randomized Election Timeout: %d", m.From, newMean, newStdDev, r.randomizedElectionTimeout)
     }
 
-	if m.SequenceId != nil && *m.SequenceId != -1 {
+    if m.SequenceId != nil && m.SendTime != nil {
         sequenceId := uint64(*m.SequenceId)
-        r.followerMetrics.AddSequenceId(sequenceId)
-        //r.logger.Debugf("Received heartbeat with SequenceId %d from %d", sequenceId, m.From)
+        timestamp := time.Unix(0, int64(*m.SendTime))
+        r.followerMetrics.AddSequenceIdInfo(sequenceId, timestamp)
 
-        seqIds := r.followerMetrics.SequenceIdQueue
-        if len(seqIds) > 0 {
-            //firstSeqId := seqIds[0]
-            //lastSeqId := seqIds[len(seqIds)-1]
-            //r.logger.Debugf("Received heartbeat with SequenceId %d from %d, Queue Head: %d, Queue Tail: %d", sequenceId, m.From, firstSeqId, lastSeqId)
-			log.Printf("Debug: Current leader is %d", r.lead)
-			heartbeatInterval = r.followerMetrics.CalculateHeartbeatInterval(r.randomizedElectionTimeout)
+        if len(r.followerMetrics.SequenceIdQueue) > 0 {
+            heartbeatInterval = r.followerMetrics.CalculateHeartbeatInterval(r.randomizedElectionTimeout)
+            log.Printf("Debug: Current leader is %d", r.lead)
         } else {
             r.logger.Debugf("Received heartbeat with SequenceId %d from %d, but the SequenceId queue is empty", sequenceId, m.From)
         }
     }
+
     r.send(pb.Message{
         To: m.From, 
         Type: pb.MsgHeartbeatResp, 
@@ -2035,8 +2066,8 @@ func (r *raft) handleHeartbeat(m pb.Message) {
         SendTime: m.SendTime,
         HeartbeatInterval: &heartbeatInterval,
     })
-    // ============ added by @skoya76 ============
 }
+
 
 
 func (r *raft) handleSnapshot(m pb.Message) {
