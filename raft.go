@@ -26,7 +26,7 @@ import (
 	"sync"
 	"time"
 	"log"
-	"strconv"
+	//"strconv"
 
 	"go.etcd.io/raft/v3/confchange"
 	"go.etcd.io/raft/v3/quorum"
@@ -396,7 +396,8 @@ func NewFollowerMetrics() *FollowerMetrics {
         Mean:            0,
         M2:              0.0,
         Count:           0,
-		SequenceIdQueue []SequenceIdInfo
+        SequenceIdQueue: make([]SequenceIdInfo, 0),
+
     }
 }
 
