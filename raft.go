@@ -125,7 +125,7 @@ func (st StateType) String() string {
 // Config contains the parameters to start a raft.
 type Config struct {
 	// id is the identity of the local raft. id cannot be 0.
-	id uint64
+	ID uint64
 
 	// ElectionTick is the number of Node.Tick invocations that must pass between
 	// elections. That is, if a follower does not receive any message from the
@@ -138,7 +138,9 @@ type Config struct {
 	// heartbeats. That is, a leader sends heartbeat messages to maintain its
 	// leadership every HeartbeatTick ticks.
 	HeartbeatTick int
-
+	MaxElectionMetricsCapacity int 
+    MinElectionMetricsCapacity int
+    HeartbeatReachabilityGoal float64
 	// Storage is the storage for raft. raft generates entries and states to be
 	// stored in storage. raft reads the persisted entries and states out of
 	// Storage when it needs. raft reads out the previous state and configuration
@@ -286,16 +288,13 @@ type Config struct {
 	// https://github.com/etcd-io/raft/issues/83
 	StepDownOnRemoval bool
 
-	MaxElectionMetricsCapacity int 
-    MinElectionMetricsCapacity int
-    HeartbeatReachabilityGoal float64
 }
 
 func (c *Config) validate() error {
-	if c.id == None {
+	if c.ID == None {
 		return errors.New("cannot use none as id")
 	}
-	if IsLocalMsgTarget(c.id) {
+	if IsLocalMsgTarget(c.ID) {
 		return errors.New("cannot use local target as id")
 	}
 
@@ -651,7 +650,7 @@ func newRaft(c *Config) *raft {
 	}
 
 	r := &raft{
-		id:                          c.id,
+		id:                          c.ID,
 		lead:                        None,
 		isLearner:                   false,
 		raftLog:                     raftlog,
