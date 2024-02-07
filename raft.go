@@ -285,6 +285,10 @@ type Config struct {
 	// This behavior will become unconditional in the future. See:
 	// https://github.com/etcd-io/raft/issues/83
 	StepDownOnRemoval bool
+
+	MaxElectionMetricsCapacity int 
+    MinElectionMetricsCapacity int
+    HeartbeatReachabilityGoal float64
 }
 
 func (c *Config) validate() error {
@@ -376,7 +380,11 @@ type followerMetrics struct {
 	minQueueSize int
 }
 
-func newfollowerMetrics(maxQueueSize int, maxQueueSize int) *followerMetrics {
+func (f *followerMetrics) isSequenceIdQueueGreaterThanMin() bool {
+    return len(f.sequenceIdQueue) > f.minQueueSize
+}
+
+func newfollowerMetrics(maxQueueSize int, minQueueSize int) *followerMetrics {
     return &followerMetrics{
         rttQueue:        make([]time.Duration, 0),
         deviationSqs:    make([]float64, 0),
@@ -401,7 +409,7 @@ func (fm *followerMetrics) resetFollowerMetrics() {
 }
 
 func (fm *followerMetrics) addRTT(rtt time.Duration) {
-    if len(fm.rttQueue) == MaxQueueSize {
+    if len(fm.rttQueue) == fm.maxQueueSize {
         oldestRtt := fm.rttQueue[0]
         fm.rttQueue = fm.rttQueue[1:]
         fm.sum -= oldestRtt
@@ -454,7 +462,7 @@ func (fm *followerMetrics) AddSequenceIdInfo(id uint64, timestamp time.Time) {
         fm.sequenceIdQueue = append([]sequenceIdInfo{info}, fm.sequenceIdQueue...)
     }
 
-    if len(fm.sequenceIdQueue) > MaxQueueSize {
+    if len(fm.sequenceIdQueue) > fm.maxQueueSize {
         fm.sequenceIdQueue = fm.sequenceIdQueue[1:]
     }
 }
@@ -2043,7 +2051,7 @@ func (r *raft) handleHeartbeat(m pb.Message) {
         r.followerMetrics.addRTT(time.Duration(*m.Rtt))
         newMean := r.followerMetrics.GetMean()
         newStdDev := r.followerMetrics.GetStdDev()
-		if len(r.followerMetrics.sequenceIdQueue) > MinQueueSize {
+		if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
         	r.randomizedElectionTimeout = int(newMean.Milliseconds() + 2*newStdDev.Milliseconds())
     	    r.logger.Debugf("Updated metrics for follower %d - mean RTT: %v, StdDev RTT: %v, Randomized Election Timeout: %d", m.From, newMean, newStdDev, r.randomizedElectionTimeout)
 		} else {
@@ -2056,8 +2064,9 @@ func (r *raft) handleHeartbeat(m pb.Message) {
         timestamp := time.Unix(0, int64(*m.SendTime))
         r.followerMetrics.AddSequenceIdInfo(sequenceId, timestamp)
 
-        if len(r.followerMetrics.sequenceIdQueue) > MinQueueSize {
-            heartbeatInterval = r.followerMetrics.calculateHeartbeatInterval(r.randomizedElectionTimeout)
+        if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
+			packetLossRate := r.followerMetrics.calculatePacketLossRate()
+            heartbeatInterval = r.calculateHeartbeatInterval(packetLossRate)
             log.Printf("Debug: Current leader is %d", r.lead)
         } else {
             heartbeatInterval = -1
