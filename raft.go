@@ -368,7 +368,9 @@ func (ls *LeaderMetrics) GetRTT(followerID uint64) (time.Duration, bool) {
 // MaxQueueSize defines the maximum size of the RTT queue.
 // TODO: Make MaxQueueSize configurable in the future.
 const MaxQueueSize = 100
-const ReachabilityGoal = 0.99
+const MinQueueSize = 50
+const K = 10
+const ReachabilityGoal = 0.9999999999
 
 type SequenceIdInfo struct {
     ID        uint64
@@ -499,14 +501,16 @@ func (fm *FollowerMetrics) CalculateHeartbeatInterval(electionTimeout int) int64
     receivedPackets := uint64(len(fm.SequenceIdQueue))
     packetLossRate := 1.0 - (float64(receivedPackets) / float64(expectedPackets))
 
+    // 新しく追加されたログ出力
+    log.Printf("Debug: First Sequence ID: %d, Timestamp: %v", firstSeqInfo.ID, firstSeqInfo.Timestamp)
+    log.Printf("Debug: Last Sequence ID: %d, Timestamp: %v", lastSeqInfo.ID, lastSeqInfo.Timestamp)
+
     var seqIdStrs []string
     for _, seqInfo := range fm.SequenceIdQueue {
         seqIdStrs = append(seqIdStrs, fmt.Sprintf("%d (Timestamp: %v)", seqInfo.ID, seqInfo.Timestamp))
     }
     log.Printf("Debug: SequenceIdQueue Contents: [%s]", strings.Join(seqIdStrs, ", "))
 
-    log.Printf("Debug: First Sequence ID: %d (Timestamp: %v)", firstSeqInfo.ID, firstSeqInfo.Timestamp)
-    log.Printf("Debug: Last Sequence ID: %d (Timestamp: %v)", lastSeqInfo.ID, lastSeqInfo.Timestamp)
     log.Printf("Debug: Expected Packets: %d", expectedPackets)
     log.Printf("Debug: Received Packets: %d", receivedPackets)
     log.Printf("Debug: Packet loss rate calculated as %v", packetLossRate)
@@ -515,19 +519,24 @@ func (fm *FollowerMetrics) CalculateHeartbeatInterval(electionTimeout int) int64
     if packetLossRate <= 0 {
         ceilLogTerm = 1
     } else {
-        logTerm := math.Log(1 - ReachabilityGoal) / math.Log(packetLossRate)
+        logTerm := math.Log(1 - ReachabilityGoal) / math.Log(packetLossRate) + 1
         ceilLogTerm = math.Ceil(logTerm)
 
+        // ReachabilityGoalの値をログに出力する
+        log.Printf("Debug: ReachabilityGoal: %v", ReachabilityGoal)
         log.Printf("Debug: Log term calculated as %v", logTerm)
         log.Printf("Debug: Ceil log term calculated as %v", ceilLogTerm)
     }
 
     heartbeatInterval := int64(math.Floor(float64(electionTimeout) / (ceilLogTerm + 1)))
 
+    log.Printf("Debug: Election Timeout: %d", electionTimeout)
     log.Printf("Debug: Calculated heartbeat interval as %v", heartbeatInterval)
 
     return heartbeatInterval
 }
+
+
 // ============ added by @skoya76 ============
 
 type raft struct {
@@ -2041,9 +2050,12 @@ func (r *raft) handleHeartbeat(m pb.Message) {
         r.followerMetrics.AddRTT(time.Duration(*m.Rtt))
         newMean := r.followerMetrics.GetMean()
         newStdDev := r.followerMetrics.GetStdDev()
-
-        r.randomizedElectionTimeout = int(newMean.Milliseconds() + 2*newStdDev.Milliseconds())
-        r.logger.Debugf("Updated metrics for follower %d - Mean RTT: %v, StdDev RTT: %v, Randomized Election Timeout: %d", m.From, newMean, newStdDev, r.randomizedElectionTimeout)
+		if len(r.followerMetrics.SequenceIdQueue) > MinQueueSize {
+        	r.randomizedElectionTimeout = int(newMean.Milliseconds() + 2*newStdDev.Milliseconds())
+    	    r.logger.Debugf("Updated metrics for follower %d - Mean RTT: %v, StdDev RTT: %v, Randomized Election Timeout: %d", m.From, newMean, newStdDev, r.randomizedElectionTimeout)
+		} else {
+			r.resetRandomizedElectionTimeout()
+		}
     }
 
     if m.SequenceId != nil && m.SendTime != nil {
@@ -2051,11 +2063,12 @@ func (r *raft) handleHeartbeat(m pb.Message) {
         timestamp := time.Unix(0, int64(*m.SendTime))
         r.followerMetrics.AddSequenceIdInfo(sequenceId, timestamp)
 
-        if len(r.followerMetrics.SequenceIdQueue) > 0 {
+        if len(r.followerMetrics.SequenceIdQueue) > MinQueueSize {
             heartbeatInterval = r.followerMetrics.CalculateHeartbeatInterval(r.randomizedElectionTimeout)
             log.Printf("Debug: Current leader is %d", r.lead)
         } else {
-            r.logger.Debugf("Received heartbeat with SequenceId %d from %d, but the SequenceId queue is empty", sequenceId, m.From)
+            heartbeatInterval = int64(r.randomizedElectionTimeout) / int64(K)
+            r.logger.Debugf("SequenceId queue does not meet the minimum size requirement")
         }
     }
 
@@ -2279,11 +2292,19 @@ func (r *raft) loadState(state pb.HardState) {
 // than or equal to the randomized election timeout in
 // [electiontimeout, 2 * electiontimeout - 1].
 func (r *raft) pastElectionTimeout() bool {
-	return r.electionElapsed >= r.randomizedElectionTimeout
+    // 選挙タイムアウトを過ぎたかどうかの判定結果を計算
+    timeoutPassed := r.electionElapsed >= r.randomizedElectionTimeout
+
+    // デバッグログに判定結果を出力
+    r.logger.Debugf("Past election timeout: %t (electionElapsed=%d, randomizedElectionTimeout=%d)", timeoutPassed, r.electionElapsed, r.randomizedElectionTimeout)
+
+    return timeoutPassed
 }
 
 func (r *raft) resetRandomizedElectionTimeout() {
 	r.randomizedElectionTimeout = r.electionTimeout + globalRand.Intn(r.electionTimeout)
+	r.logger.Debugf("resetRandomizedElectionTimeout: electionTimeout=%d, randomizedElectionTimeout=%d",
+        r.electionTimeout, r.randomizedElectionTimeout)
 }
 
 func (r *raft) sendTimeoutNow(to uint64) {
