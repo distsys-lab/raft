@@ -370,7 +370,7 @@ func (ls *LeaderMetrics) GetRTT(followerID uint64) (time.Duration, bool) {
 const MaxQueueSize = 100
 const MinQueueSize = 50
 const K = 10
-const ReachabilityGoal = 0.9999999999
+const ReachabilityGoal = 0.99
 
 type SequenceIdInfo struct {
     ID        uint64
@@ -657,8 +657,10 @@ func newRaft(c *Config) *raft {
 		maxMsgSize:                  entryEncodingSize(c.MaxSizePerMsg),
 		maxUncommittedSize:          entryPayloadSize(c.MaxUncommittedEntriesSize),
 		prs:                         tracker.MakeProgressTracker(c.MaxInflightMsgs, c.MaxInflightBytes),
-		electionTimeout:             c.ElectionTick,
-		heartbeatTimeout:            c.HeartbeatTick,
+		//electionTimeout:             c.ElectionTick,
+		//heartbeatTimeout:            c.HeartbeatTick,
+		electionTimeout:             1000,
+		heartbeatTimeout:            100,
 		logger:                      c.Logger,
 		checkQuorum:                 c.CheckQuorum,
 		preVote:                     c.PreVote,
