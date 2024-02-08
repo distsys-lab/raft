@@ -911,7 +911,7 @@ func (r *raft) sendHeartbeat(to uint64, ctx []byte) {
 		Context: ctx,
 		Rtt: &rttInt64,
 		SendTime: &timestamp,
-		sequenceId: &seqIdInt64,
+		SequenceId: &seqIdInt64,
 	}
 
 	r.send(m)
@@ -2062,8 +2062,8 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 		}
     }
 
-    if m.sequenceId != nil && m.SendTime != nil {
-        sequenceId := uint64(*m.sequenceId)
+    if m.SequenceId != nil && m.SendTime != nil {
+        sequenceId := uint64(*m.SequenceId)
         timestamp := time.Unix(0, int64(*m.SendTime))
         r.followerMetrics.addSequenceIdInfo(sequenceId, timestamp)
 
