@@ -532,9 +532,9 @@ func (r *raft) calculateHeartbeatInterval(packetLossRate float64) int64 {
         log.Printf("Debug: Ceil log term calculated as %v", ceilLogTerm)
     }
 
-    heartbeatInterval := int64(math.Floor(float64(r.electionTimeout) / (ceilLogTerm + 1)))
+    heartbeatInterval := int64(math.Floor(float64(r.randomizedElectionTimeout) / (ceilLogTerm + 1)))
 
-    log.Printf("Debug: Election Timeout: %d", r.electionTimeout)
+    log.Printf("Debug: RandomizedElection Timeout: %d", r.randomizedElectionTimeout)
     log.Printf("Debug: Calculated heartbeat interval as %v", heartbeatInterval)
 
     return heartbeatInterval
@@ -648,7 +648,7 @@ func newRaft(c *Config) *raft {
 	if err != nil {
 		panic(err) // TODO(bdarnell)
 	}
-
+   
 	r := &raft{
 		id:                          c.ID,
 		lead:                        None,
@@ -671,6 +671,8 @@ func newRaft(c *Config) *raft {
 		heartbeatStates:             make(map[uint64]*HeartbeatState),
 		heartbeatReachabilityGoal:   c.HeartbeatReachabilityGoal,
 	}
+	r.logger.Infof("ElectionTick: %d, HeartbeatTick: %d, MaxElectionMetricsCapacity: %d, MinElectionMetricsCapacity: %d, HeartbeatReachabilityGoal: %f",
+    c.ElectionTick, c.HeartbeatTick, c.MaxElectionMetricsCapacity, c.MinElectionMetricsCapacity, c.HeartbeatReachabilityGoal)
 
 	cfg, prs, err := confchange.Restore(confchange.Changer{
 		Tracker:   r.prs,
