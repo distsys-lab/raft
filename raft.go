@@ -34,7 +34,7 @@ import (
 )
 
 const (
-	// None is a placeholder node id used when there is no leader.
+	// None is a placeholder node ID used when there is no leader.
 	None uint64 = 0
 	// LocalAppendThread is a reference to a local thread that saves unstable
 	// log entries and snapshots to stable storage. The identifier is used as a
@@ -124,7 +124,7 @@ func (st StateType) String() string {
 
 // Config contains the parameters to start a raft.
 type Config struct {
-	// id is the identity of the local raft. id cannot be 0.
+	// ID is the identity of the local raft. ID cannot be 0.
 	ID uint64
 
 	// ElectionTick is the number of Node.Tick invocations that must pass between
@@ -138,9 +138,12 @@ type Config struct {
 	// heartbeats. That is, a leader sends heartbeat messages to maintain its
 	// leadership every HeartbeatTick ticks.
 	HeartbeatTick int
+
+	// 
 	MaxElectionMetricsCapacity int 
     MinElectionMetricsCapacity int
     HeartbeatReachabilityGoal float64
+
 	// Storage is the storage for raft. raft generates entries and states to be
 	// stored in storage. raft reads the persisted entries and states out of
 	// Storage when it needs. raft reads out the previous state and configuration
@@ -292,10 +295,10 @@ type Config struct {
 
 func (c *Config) validate() error {
 	if c.ID == None {
-		return errors.New("cannot use none as id")
+		return errors.New("cannot use none as ID")
 	}
 	if IsLocalMsgTarget(c.ID) {
-		return errors.New("cannot use local target as id")
+		return errors.New("cannot use local target as ID")
 	}
 
 	if c.HeartbeatTick <= 0 {
@@ -338,207 +341,6 @@ func (c *Config) validate() error {
 	}
 
 	return nil
-}
-
-type leaderMetrics struct {
-	rtts map[uint64]time.Duration
-}
-
-func newLeaderMetrics() *leaderMetrics {
-    return &leaderMetrics{
-        rtts: make(map[uint64]time.Duration),
-    }
-}
-
-func (ls *leaderMetrics) updateRTT(followerID uint64, rtt time.Duration) {
-    if ls.rtts == nil {
-        ls.rtts = make(map[uint64]time.Duration)
-    }
-    ls.rtts[followerID] = rtt
-}
-
-func (ls *leaderMetrics) getRTT(followerID uint64) (time.Duration, bool) {
-    rtt, ok := ls.rtts[followerID]
-    return rtt, ok
-}
-
-type sequenceIdInfo struct {
-    id        uint64
-    timestamp time.Time
-}
-
-type followerMetrics struct {
-    rttQueue     []time.Duration 
-    deviationSqs []float64       
-    sum          time.Duration   
-    mean         time.Duration   
-    m2           float64         
-    count        int             
-	sequenceIdQueue []sequenceIdInfo
-	maxQueueSize int
-	minQueueSize int
-}
-
-func (f *followerMetrics) isSequenceIdQueueGreaterThanMin() bool {
-	log.Printf("sequenceIdQueue length: %d, minQueueSize: %d", len(f.sequenceIdQueue), f.minQueueSize)
-    return len(f.sequenceIdQueue) > f.minQueueSize
-}
-
-func newfollowerMetrics(maxQueueSize int, minQueueSize int) *followerMetrics {
-    return &followerMetrics{
-        rttQueue:        make([]time.Duration, 0),
-        deviationSqs:    make([]float64, 0),
-        sum:             0,
-        mean:            0,
-        m2:              0.0,
-        count:           0,
-        sequenceIdQueue: make([]sequenceIdInfo, 0),
-		maxQueueSize:    maxQueueSize,
-		minQueueSize:    minQueueSize,
-    }
-}
-
-func (fm *followerMetrics) resetFollowerMetrics() {
-    fm.rttQueue = make([]time.Duration, 0)
-    fm.deviationSqs = make([]float64, 0)
-    fm.sum = 0
-    fm.mean = 0
-    fm.m2 = 0.0
-    fm.count = 0
-    fm.sequenceIdQueue = make([]sequenceIdInfo, 0)
-}
-
-func (fm *followerMetrics) addRTT(rtt time.Duration) {
-    if len(fm.rttQueue) == fm.maxQueueSize {
-        oldestRtt := fm.rttQueue[0]
-        fm.rttQueue = fm.rttQueue[1:]
-        fm.sum -= oldestRtt
-        fm.count--
-        oldestDevSq := fm.deviationSqs[0]
-        fm.deviationSqs = fm.deviationSqs[1:]
-        fm.m2 -= oldestDevSq
-    }
-
-    fm.rttQueue = append(fm.rttQueue, rtt)
-    fm.sum += rtt
-    fm.count++
-    newMean := float64(fm.sum) / float64(fm.count)
-    fm.mean = time.Duration(newMean)
-    deviation := float64(rtt) - newMean
-    deviationSq := deviation * deviation
-    fm.m2 += deviationSq
-    fm.deviationSqs = append(fm.deviationSqs, deviationSq)
-}
-
-func (fm *followerMetrics) getMean() time.Duration {
-    return fm.mean
-}
-
-func (fm *followerMetrics) getStdDev() time.Duration {
-    if fm.count < 2 {
-        return 0
-    }
-
-    variance := fm.m2 / float64(fm.count-1)
-    return time.Duration(math.Sqrt(variance))
-}
-
-func (fm *followerMetrics) addSequenceIdInfo(id uint64, timestamp time.Time) {
-    info := sequenceIdInfo{
-        id:        id,
-        timestamp: timestamp,
-    }
-
-    inserted := false
-    for i := len(fm.sequenceIdQueue) - 1; i >= 0; i-- {
-        if info.timestamp.After(fm.sequenceIdQueue[i].timestamp) {
-            fm.sequenceIdQueue = append(fm.sequenceIdQueue[:i+1], append([]sequenceIdInfo{info}, fm.sequenceIdQueue[i+1:]...)...)
-            inserted = true
-            break
-        }
-    }
-
-    if !inserted {
-        fm.sequenceIdQueue = append([]sequenceIdInfo{info}, fm.sequenceIdQueue...)
-    }
-
-    if len(fm.sequenceIdQueue) > fm.maxQueueSize {
-        fm.sequenceIdQueue = fm.sequenceIdQueue[1:]
-    }
-}
-
-type heartbeatState struct {
-    elapsed    int
-    timeout    int
-    sequenceId uint64
-}
-
-func (r *raft) initializeheartbeatStates(followerIDs []uint64, defaultTimeout int) {
-	r.heartbeatStates = make(map[uint64]*heartbeatState)
-	for _, id := range followerIDs {
-		r.heartbeatStates[id] = &heartbeatState{
-			elapsed:    0,
-			timeout:    defaultTimeout,
-			sequenceId: 0,
-		}
-	}
-}
-
-func calculatePacketCount(firstID, lastID uint64) uint64 {
-    if lastID >= firstID {
-        return lastID - firstID + 1
-    }
-
-    return (math.MaxUint64 - firstID) + lastID + 2
-}
-
-func (fm *followerMetrics) calculatePacketLossRate() float64 {
-    if len(fm.sequenceIdQueue) < 2 {
-        log.Printf("Debug: sequenceIdQueue is too short to calculate packet loss rate")
-        return 0.0
-    }
-
-    firstSeqInfo := fm.sequenceIdQueue[0]
-    lastSeqInfo := fm.sequenceIdQueue[len(fm.sequenceIdQueue)-1]
-    expectedPackets := calculatePacketCount(firstSeqInfo.id, lastSeqInfo.id)
-    receivedPackets := uint64(len(fm.sequenceIdQueue))
-    packetLossRate := 1.0 - (float64(receivedPackets) / float64(expectedPackets))
-
-    log.Printf("Debug: First Sequence id: %d, timestamp: %v", firstSeqInfo.id, firstSeqInfo.timestamp)
-    log.Printf("Debug: Last Sequence id: %d, timestamp: %v", lastSeqInfo.id, lastSeqInfo.timestamp)
-
-    var seqIdStrs []string
-    for _, seqInfo := range fm.sequenceIdQueue {
-        seqIdStrs = append(seqIdStrs, fmt.Sprintf("%d (timestamp: %v)", seqInfo.id, seqInfo.timestamp))
-    }
-    log.Printf("Debug: sequenceIdQueue Contents: [%s]", strings.Join(seqIdStrs, ", "))
-
-    log.Printf("Debug: Expected Packets: %d", expectedPackets)
-    log.Printf("Debug: Received Packets: %d", receivedPackets)
-    log.Printf("Debug: Packet loss rate calculated as %v", packetLossRate)
-
-    return packetLossRate
-}
-
-func (r *raft) calculateHeartbeatInterval(packetLossRate float64) int64 {
-    var ceilLogTerm float64
-    if packetLossRate <= 0 {
-        ceilLogTerm = 1
-    } else {
-        logTerm := math.Log(1 - r.heartbeatReachabilityGoal) / math.Log(packetLossRate) + 1
-        ceilLogTerm = math.Ceil(logTerm)
-
-        log.Printf("Debug: heartbeatReachabilityGoal: %v", r.heartbeatReachabilityGoal)
-        log.Printf("Debug: Log term calculated as %v", logTerm)
-        log.Printf("Debug: Ceil log term calculated as %v", ceilLogTerm)
-    }
-
-    heartbeatInterval := int64(math.Floor(float64(r.randomizedElectionTimeout) / (ceilLogTerm + 1)))
-
-    log.Printf("Debug: RandomizedElection timeout: %d", r.randomizedElectionTimeout)
-    log.Printf("Debug: Calculated heartbeat interval as %v", heartbeatInterval)
-
-    return heartbeatInterval
 }
 
 type raft struct {
@@ -1093,7 +895,6 @@ func (r *raft) tickHeartbeat() {
 			hbState.elapsed = 0
 			hbState.sequenceId++
 			r.sendHeartbeat(id, []byte{})
-			// Including the timeout value in the log output
 			r.logger.Debugf("Heartbeat sent from %d to %d, timeout: %d", r.id, id, hbState.timeout)
 		}
 	}
@@ -2297,12 +2098,8 @@ func (r *raft) loadState(state pb.HardState) {
 // than or equal to the randomized election timeout in
 // [electiontimeout, 2 * electiontimeout - 1].
 func (r *raft) pastElectionTimeout() bool {
-    // 選挙タイムアウトを過ぎたかどうかの判定結果を計算
     timeoutPassed := r.electionElapsed >= r.randomizedElectionTimeout
-
-    // デバッグログに判定結果を出力
     r.logger.Debugf("Past election timeout: %t (electionElapsed=%d, randomizedElectionTimeout=%d)", timeoutPassed, r.electionElapsed, r.randomizedElectionTimeout)
-
     return timeoutPassed
 }
 
@@ -2417,4 +2214,207 @@ func sendMsgReadIndexResponse(r *raft, m pb.Message) {
 			r.send(resp)
 		}
 	}
+}
+
+// The following set of codes is for the optimization of election parameters
+
+func (r *raft) calculateHeartbeatInterval(packetLossRate float64) int64 {
+    var ceilLogTerm float64
+    if packetLossRate <= 0 {
+        ceilLogTerm = 1
+    } else {
+        logTerm := math.Log(1 - r.heartbeatReachabilityGoal) / math.Log(packetLossRate) + 1
+        ceilLogTerm = math.Ceil(logTerm)
+
+        log.Printf("Debug: heartbeatReachabilityGoal: %v", r.heartbeatReachabilityGoal)
+        log.Printf("Debug: Log term calculated as %v", logTerm)
+        log.Printf("Debug: Ceil log term calculated as %v", ceilLogTerm)
+    }
+
+    heartbeatInterval := int64(math.Floor(float64(r.randomizedElectionTimeout) / (ceilLogTerm + 1)))
+
+    log.Printf("Debug: RandomizedElection timeout: %d", r.randomizedElectionTimeout)
+    log.Printf("Debug: Calculated heartbeat interval as %v", heartbeatInterval)
+
+    return heartbeatInterval
+}
+
+type leaderMetrics struct {
+	rtts map[uint64]time.Duration
+}
+
+func newLeaderMetrics() *leaderMetrics {
+    return &leaderMetrics{
+        rtts: make(map[uint64]time.Duration),
+    }
+}
+
+func (ls *leaderMetrics) updateRTT(followerID uint64, rtt time.Duration) {
+    if ls.rtts == nil {
+        ls.rtts = make(map[uint64]time.Duration)
+    }
+    ls.rtts[followerID] = rtt
+}
+
+func (ls *leaderMetrics) getRTT(followerID uint64) (time.Duration, bool) {
+    rtt, ok := ls.rtts[followerID]
+    return rtt, ok
+}
+
+type sequenceIdInfo struct {
+    id        uint64
+    timestamp time.Time
+}
+
+type followerMetrics struct {
+    rttQueue     []time.Duration 
+    deviationSqs []float64       
+    sum          time.Duration   
+    mean         time.Duration   
+    m2           float64         
+    count        int             
+	sequenceIdQueue []sequenceIdInfo
+	maxQueueSize int
+	minQueueSize int
+}
+
+func (f *followerMetrics) isSequenceIdQueueGreaterThanMin() bool {
+	log.Printf("sequenceIdQueue length: %d, minQueueSize: %d", len(f.sequenceIdQueue), f.minQueueSize)
+    return len(f.sequenceIdQueue) > f.minQueueSize
+}
+
+func newfollowerMetrics(maxQueueSize int, minQueueSize int) *followerMetrics {
+    return &followerMetrics{
+        rttQueue:        make([]time.Duration, 0),
+        deviationSqs:    make([]float64, 0),
+        sum:             0,
+        mean:            0,
+        m2:              0.0,
+        count:           0,
+        sequenceIdQueue: make([]sequenceIdInfo, 0),
+		maxQueueSize:    maxQueueSize,
+		minQueueSize:    minQueueSize,
+    }
+}
+
+func (fm *followerMetrics) resetFollowerMetrics() {
+    fm.rttQueue = make([]time.Duration, 0)
+    fm.deviationSqs = make([]float64, 0)
+    fm.sum = 0
+    fm.mean = 0
+    fm.m2 = 0.0
+    fm.count = 0
+    fm.sequenceIdQueue = make([]sequenceIdInfo, 0)
+}
+
+func (fm *followerMetrics) addRTT(rtt time.Duration) {
+    if len(fm.rttQueue) == fm.maxQueueSize {
+        oldestRtt := fm.rttQueue[0]
+        fm.rttQueue = fm.rttQueue[1:]
+        fm.sum -= oldestRtt
+        fm.count--
+        oldestDevSq := fm.deviationSqs[0]
+        fm.deviationSqs = fm.deviationSqs[1:]
+        fm.m2 -= oldestDevSq
+    }
+
+    fm.rttQueue = append(fm.rttQueue, rtt)
+    fm.sum += rtt
+    fm.count++
+    newMean := float64(fm.sum) / float64(fm.count)
+    fm.mean = time.Duration(newMean)
+    deviation := float64(rtt) - newMean
+    deviationSq := deviation * deviation
+    fm.m2 += deviationSq
+    fm.deviationSqs = append(fm.deviationSqs, deviationSq)
+}
+
+func (fm *followerMetrics) getMean() time.Duration {
+    return fm.mean
+}
+
+func (fm *followerMetrics) getStdDev() time.Duration {
+    if fm.count < 2 {
+        return 0
+    }
+
+    variance := fm.m2 / float64(fm.count-1)
+    return time.Duration(math.Sqrt(variance))
+}
+
+func (fm *followerMetrics) addSequenceIdInfo(id uint64, timestamp time.Time) {
+    info := sequenceIdInfo{
+        id:        id,
+        timestamp: timestamp,
+    }
+
+    inserted := false
+    for i := len(fm.sequenceIdQueue) - 1; i >= 0; i-- {
+        if info.timestamp.After(fm.sequenceIdQueue[i].timestamp) {
+            fm.sequenceIdQueue = append(fm.sequenceIdQueue[:i+1], append([]sequenceIdInfo{info}, fm.sequenceIdQueue[i+1:]...)...)
+            inserted = true
+            break
+        }
+    }
+
+    if !inserted {
+        fm.sequenceIdQueue = append([]sequenceIdInfo{info}, fm.sequenceIdQueue...)
+    }
+
+    if len(fm.sequenceIdQueue) > fm.maxQueueSize {
+        fm.sequenceIdQueue = fm.sequenceIdQueue[1:]
+    }
+}
+
+type heartbeatState struct {
+    elapsed    int
+    timeout    int
+    sequenceId uint64
+}
+
+func (r *raft) initializeheartbeatStates(followerIDs []uint64, defaultTimeout int) {
+	r.heartbeatStates = make(map[uint64]*heartbeatState)
+	for _, id := range followerIDs {
+		r.heartbeatStates[id] = &heartbeatState{
+			elapsed:    0,
+			timeout:    defaultTimeout,
+			sequenceId: 0,
+		}
+	}
+}
+
+func calculatePacketCount(firstID, lastID uint64) uint64 {
+    if lastID >= firstID {
+        return lastID - firstID + 1
+    }
+
+    return (math.MaxUint64 - firstID) + lastID + 2
+}
+
+func (fm *followerMetrics) calculatePacketLossRate() float64 {
+    if len(fm.sequenceIdQueue) < 2 {
+        log.Printf("Debug: sequenceIdQueue is too short to calculate packet loss rate")
+        return 0.0
+    }
+
+    firstSeqInfo := fm.sequenceIdQueue[0]
+    lastSeqInfo := fm.sequenceIdQueue[len(fm.sequenceIdQueue)-1]
+    expectedPackets := calculatePacketCount(firstSeqInfo.id, lastSeqInfo.id)
+    receivedPackets := uint64(len(fm.sequenceIdQueue))
+    packetLossRate := 1.0 - (float64(receivedPackets) / float64(expectedPackets))
+
+    log.Printf("Debug: First Sequence id: %d, timestamp: %v", firstSeqInfo.id, firstSeqInfo.timestamp)
+    log.Printf("Debug: Last Sequence id: %d, timestamp: %v", lastSeqInfo.id, lastSeqInfo.timestamp)
+
+    var seqIdStrs []string
+    for _, seqInfo := range fm.sequenceIdQueue {
+        seqIdStrs = append(seqIdStrs, fmt.Sprintf("%d (timestamp: %v)", seqInfo.id, seqInfo.timestamp))
+    }
+    log.Printf("Debug: sequenceIdQueue Contents: [%s]", strings.Join(seqIdStrs, ", "))
+
+    log.Printf("Debug: Expected Packets: %d", expectedPackets)
+    log.Printf("Debug: Received Packets: %d", receivedPackets)
+    log.Printf("Debug: Packet loss rate calculated as %v", packetLossRate)
+
+    return packetLossRate
 }
