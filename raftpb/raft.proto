@@ -105,6 +105,11 @@ message Message {
 	// to respond and who to respond to when the work associated with a message
 	// is complete. Populated for MsgStorageAppend and MsgStorageApply messages.
 	repeated Message     responses   = 14 [(gogoproto.nullable) = false];
+	// added by @skoya76
+	optional int64 rtt = 15;
+	optional int64 send_time = 16;
+	optional int64 sequence_id = 17;
+	optional int64 heartbeat_interval = 18;
 }
 
 message HardState {
