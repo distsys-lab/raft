@@ -665,6 +665,7 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 		r.logger.Debugf("%x paused sending replication messages to %x [%s]", r.id, to, pr)
 
 		r.send(pb.Message{To: to, Type: pb.MsgSnap, Snapshot: &snapshot})
+		r.resetHeartbeatElapsed(to)
 		return true
 	}
 
@@ -681,6 +682,7 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 		Entries: ents,
 		Commit:  r.raftLog.committed,
 	})
+	r.resetHeartbeatElapsed(to)
 	return true
 }
 
@@ -868,7 +870,6 @@ func (r *raft) tickElection() {
 
 // tickHeartbeat is run by leaders to send a MsgBeat after r.heartbeatTimeout.
 func (r *raft) tickHeartbeat() {
-	//r.heartbeatElapsed++
 	r.electionElapsed++
 
 	if r.electionElapsed >= r.electionTimeout {
@@ -898,13 +899,6 @@ func (r *raft) tickHeartbeat() {
 			r.logger.Debugf("Heartbeat sent from %d to %d, timeout: %d", r.id, id, hbState.timeout)
 		}
 	}
-
-	//if r.heartbeatElapsed >= r.heartbeatTimeout {
-	//	r.heartbeatElapsed = 0
-	//	if err := r.Step(pb.Message{From: r.id, Type: pb.MsgBeat}); err != nil {
-	//		r.logger.Debugf("error occurred during checking sending heartbeat: %v", err)
-	//	}
-	//}
 }
 
 func (r *raft) becomeFollower(term uint64, lead uint64) {
@@ -2237,6 +2231,16 @@ func (r *raft) calculateHeartbeatInterval(packetLossRate float64) int64 {
     log.Printf("Debug: Calculated heartbeat interval as %v", heartbeatInterval)
 
     return heartbeatInterval
+}
+
+func (r *raft) resetHeartbeatElapsed(id uint64) {
+	if hbState, ok := r.heartbeatStates[id]; ok {
+		hbState.elapsed = 0
+		r.heartbeatStates[id] = hbState
+		r.logger.Debugf("Heartbeat elapsed time reset for follower %d", id)
+	} else {
+		r.logger.Debugf("No heartbeat state found for follower %d", id)
+	}
 }
 
 type leaderMetrics struct {
