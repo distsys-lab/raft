@@ -2353,20 +2353,19 @@ func (fm *followerMetrics) addSequenceIdInfo(id uint64, timestamp time.Time) {
     }
 
     inserted := false
-    duplicate := false
-
-    for i, existingInfo := range fm.sequenceIdQueue {
-        if info.timestamp.Equal(existingInfo.timestamp) {
-            duplicate = true
+    for i := len(fm.sequenceIdQueue) - 1; i >= 0; i-- {
+        if info.timestamp.After(fm.sequenceIdQueue[i].timestamp) {
+            fm.sequenceIdQueue = append(fm.sequenceIdQueue[:i+1], append([]sequenceIdInfo{info}, fm.sequenceIdQueue[i+1:]...)...)
+            inserted = true
             break
-        } else if info.timestamp.After(existingInfo.timestamp) {
-            fm.sequenceIdQueue = append(fm.sequenceIdQueue[:i], append([]sequenceIdInfo{info}, fm.sequenceIdQueue[i:]...)...)
+        } else if info.timestamp.Equal(fm.sequenceIdQueue[i].timestamp) {
+            log.Printf("Skipping insertion of sequenceIdInfo with id %d due to identical timestamp", id)
             inserted = true
             break
         }
     }
 
-    if !inserted && !duplicate {
+    if !inserted {
         fm.sequenceIdQueue = append([]sequenceIdInfo{info}, fm.sequenceIdQueue...)
     }
 
