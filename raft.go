@@ -142,6 +142,7 @@ type Config struct {
 	// 
 	MaxElectionMetricsCapacity int 
     MinElectionMetricsCapacity int
+	ElectionSafetyFactor int
     HeartbeatReachabilityGoal float64
 
 	// Storage is the storage for raft. raft generates entries and states to be
@@ -439,6 +440,7 @@ type raft struct {
 	leaderMetrics *leaderMetrics
 	followerMetrics *followerMetrics 
 	heartbeatStates map[uint64]*heartbeatState
+	electionSafetyFactor int
 	heartbeatReachabilityGoal float64
 }
 
@@ -472,10 +474,11 @@ func newRaft(c *Config) *raft {
 		leaderMetrics:               newLeaderMetrics(),
 		followerMetrics:             newfollowerMetrics(c.MaxElectionMetricsCapacity, c.MinElectionMetricsCapacity),
 		heartbeatStates:             make(map[uint64]*heartbeatState),
+		electionSafetyFactor:       c.ElectionSafetyFactor,
 		heartbeatReachabilityGoal:   c.HeartbeatReachabilityGoal,
 	}
-	r.logger.Infof("ElectionTick: %d, HeartbeatTick: %d, MaxElectionMetricsCapacity: %d, MinElectionMetricsCapacity: %d, HeartbeatReachabilityGoal: %f",
-    c.ElectionTick, c.HeartbeatTick, c.MaxElectionMetricsCapacity, c.MinElectionMetricsCapacity, c.HeartbeatReachabilityGoal)
+	r.logger.Infof("ElectionTick: %d, HeartbeatTick: %d, MaxElectionMetricsCapacity: %d, MinElectionMetricsCapacity: %d, ElectionSafetyFactor: %d, HeartbeatReachabilityGoal: %f",
+    c.ElectionTick, c.HeartbeatTick, c.MaxElectionMetricsCapacity, c.MinElectionMetricsCapacity, c.ElectionSafetyFactor, c.HeartbeatReachabilityGoal)
 
 	cfg, prs, err := confchange.Restore(confchange.Changer{
 		Tracker:   r.prs,
@@ -1850,7 +1853,7 @@ func (r *raft) handleHeartbeat(m pb.Message) {
         newMean := r.followerMetrics.getMean()
         newStdDev := r.followerMetrics.getStdDev()
 		if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
-        	r.randomizedElectionTimeout = int(newMean.Milliseconds() + 2*newStdDev.Milliseconds())
+        	r.randomizedElectionTimeout = int(newMean.Milliseconds() + int64(r.electionSafetyFactor)*newStdDev.Milliseconds())
     	    r.logger.Debugf("Updated metrics for follower %d - mean RTT: %v, StdDev RTT: %v, Randomized Election timeout: %d", m.From, newMean, newStdDev, r.randomizedElectionTimeout)
 		} else {
 			r.resetRandomizedElectionTimeout()
