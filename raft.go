@@ -705,7 +705,7 @@ func (r *raft) sendHeartbeat(to uint64, ctx []byte) {
 	seqID := r.heartbeatStates[to].sequenceId
 	seqIdInt64 := int64(seqID)
 
-	r.logger.Debugf("Sending heartbeat to %x at term %d with RTT %v", to, r.Term, rtt)
+	r.logger.Infof("Sending heartbeat to %x at term %d with RTT %v", to, r.Term, rtt)
 
 	timestamp := time.Now().UnixNano()
 	rttInt64 := int64(rtt)
@@ -1584,13 +1584,13 @@ func stepLeader(r *raft, m pb.Message) error {
 		if m.HeartbeatInterval != nil {
 			heartbeatInterval := *m.HeartbeatInterval
 			if heartbeatInterval != -1 {
-				r.logger.Debugf("Received heartbeat response from %d with interval %d", m.From, heartbeatInterval)
+				r.logger.Infof("Received heartbeat response from %d with interval %d", m.From, heartbeatInterval)
 		
 				if _, exists := r.heartbeatStates[m.From]; exists {
 					r.heartbeatStates[m.From].timeout = int(heartbeatInterval)
 				}
 			} else {
-				r.logger.Debugf("Received heartbeat response from %d.", m.From)
+				r.logger.Infof("Received heartbeat response from %d.", m.From)
 			}
 		}
 
