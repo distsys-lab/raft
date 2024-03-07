@@ -705,7 +705,7 @@ func (r *raft) sendHeartbeat(to uint64, ctx []byte) {
 	seqID := r.heartbeatStates[to].sequenceId
 	seqIdInt64 := int64(seqID)
 
-	r.logger.Infof("Sending heartbeat to %x at term %d with RTT %v", to, r.Term, rtt)
+    r.logger.Infof("Sending heartbeat to %x at term %d with RTT %v, sequence ID %d", to, r.Term, rtt, seqID)
 
 	timestamp := time.Now().UnixNano()
 	rttInt64 := int64(rtt)
