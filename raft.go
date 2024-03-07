@@ -1857,6 +1857,7 @@ func (r *raft) handleHeartbeat(m pb.Message) {
             r.randomizedElectionTimeout = int(newMean.Milliseconds() + int64(r.electionSafetyFactor)*newStdDev.Milliseconds())
         }
     }
+	r.logger.Infof("Current randomizedElectionTimeout: %d", r.randomizedElectionTimeout)
 
     if m.SequenceId != nil && m.SendTime != nil {
         sequenceId := uint64(*m.SequenceId)
