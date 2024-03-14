@@ -1848,15 +1848,19 @@ func (r *raft) handleHeartbeat(m pb.Message) {
     r.raftLog.commitTo(m.Commit)
     var heartbeatInterval int64
 
-    if m.Rtt != nil {
-        r.logger.Infof("Received RTT from %d: %d ns.", m.From, *m.Rtt)
-        r.followerMetrics.addRTT(time.Duration(*m.Rtt))
-        newMean := r.followerMetrics.getMean()
-        newStdDev := r.followerMetrics.getStdDev()
-        if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
-            r.randomizedElectionTimeout = int(newMean.Milliseconds() + int64(r.electionSafetyFactor)*newStdDev.Milliseconds())
-        }
-    }
+	if m.Rtt != nil {
+		r.logger.Debugf("Received RTT from %d: %d ns.", m.From, *m.Rtt)
+		r.followerMetrics.addRTT(time.Duration(*m.Rtt))
+		newMean := r.followerMetrics.getMean()
+		newStdDev := r.followerMetrics.getStdDev()
+		if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
+			baseTimeout := int(newMean.Milliseconds() + int64(r.electionSafetyFactor)*newStdDev.Milliseconds())
+			randomizedElectionTimeout := baseTimeout + globalRand.Intn(baseTimeout*5)
+			r.randomizedElectionTimeout = randomizedElectionTimeout
+			r.logger.Debugf("Base election timeout: %d", baseTimeout)
+			r.logger.Debugf("Randomized election timeout: %d", randomizedElectionTimeout)
+		}
+	}
 	r.logger.Infof("Current randomizedElectionTimeout: %d", r.randomizedElectionTimeout)
 
     if m.SequenceId != nil && m.SendTime != nil {
