@@ -443,6 +443,7 @@ type raft struct {
 	heartbeatReachabilityGoal float64
 	campaignAttemptTimestamp  time.Time
 	lastCampaignTimeTaken     time.Duration
+	lastElectionFailed		  bool
 }
 
 func newRaft(c *Config) *raft {
@@ -805,16 +806,7 @@ func (r *raft) reset(term uint64) {
 
 	r.electionElapsed = 0
 	r.heartbeatElapsed = 0
-	r.logger.Infof("Current state: %v, LastCampaignTimeTaken: %v",
-		r.state, r.lastCampaignTimeTaken)
-
-	if r.state == StateCandidate {
-		baseTimeoutMs := int(r.lastCampaignTimeTaken / time.Millisecond)
-		r.calculateRandomizedElectionTimeout(baseTimeoutMs)
-		r.logger.Infof("baseTimeoutMs: %d, randomizedElectionTimeout: %d", baseTimeoutMs, r.randomizedElectionTimeout)
-	} else {
-		r.resetRandomizedElectionTimeout()
-	}
+	r.resetRandomizedElectionTimeout()
 
 	r.abortLeaderTransfer()
 
@@ -919,6 +911,13 @@ func (r *raft) becomeFollower(term uint64, lead uint64) {
 	r.lead = lead
 	r.state = StateFollower
 
+	if r.lastElectionFailed == true {
+		r.logger.Infof("Current state: %v, LastCampaignTimeTaken: %v", r.state, r.lastCampaignTimeTaken)
+		baseTimeoutMs := int(r.lastCampaignTimeTaken / time.Millisecond)
+		r.calculateRandomizedElectionTimeout(baseTimeoutMs)
+		r.logger.Infof("baseTimeoutMs: %d, randomizedElectionTimeout: %d", baseTimeoutMs, r.randomizedElectionTimeout)
+	}
+	r.lastElectionFailed = false
 	r.followerMetrics.resetFollowerMetrics()
 
 	r.logger.Infof("%x became follower at term %d", r.id, r.Term)
@@ -934,6 +933,12 @@ func (r *raft) becomeCandidate() {
 	r.reset(r.Term + 1)
 	r.tick = r.tickElection
 	r.Vote = r.id
+
+	r.logger.Infof("Current state: %v, LastCampaignTimeTaken: %v", r.state, r.lastCampaignTimeTaken)
+	baseTimeoutMs := int(r.lastCampaignTimeTaken / time.Millisecond)
+	r.calculateRandomizedElectionTimeout(baseTimeoutMs)
+	r.logger.Infof("baseTimeoutMs: %d, randomizedElectionTimeout: %d", baseTimeoutMs, r.randomizedElectionTimeout)
+
 	r.followerMetrics.resetFollowerMetrics()
 	r.logger.Infof("%x became candidate at term %d", r.id, r.Term)
 }
@@ -1747,6 +1752,7 @@ func stepCandidate(r *raft, m pb.Message) error {
 		case quorum.VoteLost:
 			// pb.MsgPreVoteResp contains future term of pre-candidate
 			// m.Term > r.Term; reuse r.Term
+			r.lastElectionFailed = true
 			r.becomeFollower(r.Term, None)
 		}
 	case pb.MsgTimeoutNow:
