@@ -668,7 +668,7 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 		r.logger.Debugf("%x paused sending replication messages to %x [%s]", r.id, to, pr)
 
 		r.send(pb.Message{To: to, Type: pb.MsgSnap, Snapshot: &snapshot})
-		r.resetHeartbeatElapsed(to)
+		//r.resetHeartbeatElapsed(to)
 		return true
 	}
 
@@ -685,7 +685,7 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 		Entries: ents,
 		Commit:  r.raftLog.committed,
 	})
-	r.resetHeartbeatElapsed(to)
+	//r.resetHeartbeatElapsed(to)
 	return true
 }
 
@@ -2258,13 +2258,13 @@ func (r *raft) calculateHeartbeatInterval(packetLossRate float64) int64 {
 	return heartbeatInterval
 }
 
-func (r *raft) resetHeartbeatElapsed(id uint64) {
-	if hbState, ok := r.heartbeatStates[id]; ok {
-		hbState.elapsed = 0
-		r.heartbeatStates[id] = hbState
-	} else {
-	}
-}
+//func (r *raft) resetHeartbeatElapsed(id uint64) {
+//	if hbState, ok := r.heartbeatStates[id]; ok {
+//		hbState.elapsed = 0
+//		r.heartbeatStates[id] = hbState
+//	} else {
+//	}
+//}
 
 func (r *raft) printFollowerMetrics(fm *followerMetrics) {
 	r.logger.Debugf("Follower Metrics:")
