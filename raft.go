@@ -707,7 +707,7 @@ func (r *raft) sendHeartbeat(to uint64, ctx []byte) {
 	seqID := r.heartbeatStates[to].sequenceId
 	seqIdInt64 := int64(seqID)
 
-	r.logger.Infof("Sending heartbeat to %x at term %d with RTT %v, sequence ID %d", to, r.Term, rtt, seqID)
+	r.logger.Debugf("Sending heartbeat to %x at term %d with RTT %v, sequence ID %d", to, r.Term, rtt, seqID)
 
 	timestamp := time.Now().UnixNano()
 	rttInt64 := int64(rtt)
@@ -912,10 +912,10 @@ func (r *raft) becomeFollower(term uint64, lead uint64) {
 	r.state = StateFollower
 
 	if r.lastElectionFailed == true {
-		r.logger.Infof("Current state: %v, LastCampaignTimeTaken: %v", r.state, r.lastCampaignTimeTaken)
+		r.logger.Debugf("Current state: %v, LastCampaignTimeTaken: %v", r.state, r.lastCampaignTimeTaken)
 		baseTimeoutMs := int(r.lastCampaignTimeTaken / time.Millisecond)
 		r.calculateRandomizedElectionTimeout(baseTimeoutMs)
-		r.logger.Infof("baseTimeoutMs: %d, randomizedElectionTimeout: %d", baseTimeoutMs, r.randomizedElectionTimeout)
+		r.logger.Debugf("baseTimeoutMs: %d, randomizedElectionTimeout: %d", baseTimeoutMs, r.randomizedElectionTimeout)
 	}
 	r.lastElectionFailed = false
 	r.followerMetrics.resetFollowerMetrics()
@@ -934,10 +934,10 @@ func (r *raft) becomeCandidate() {
 	r.Vote = r.id
 	r.state = StateCandidate
 
-	r.logger.Infof("Current state: %v, LastCampaignTimeTaken: %v", r.state, r.lastCampaignTimeTaken)
+	r.logger.Debugf("Current state: %v, LastCampaignTimeTaken: %v", r.state, r.lastCampaignTimeTaken)
 	baseTimeoutMs := int(r.lastCampaignTimeTaken / time.Millisecond)
 	r.calculateRandomizedElectionTimeout(baseTimeoutMs)
-	r.logger.Infof("baseTimeoutMs: %d, randomizedElectionTimeout: %d", baseTimeoutMs, r.randomizedElectionTimeout)
+	r.logger.Debugf("baseTimeoutMs: %d, randomizedElectionTimeout: %d", baseTimeoutMs, r.randomizedElectionTimeout)
 
 	r.followerMetrics.resetFollowerMetrics()
 	r.logger.Infof("%x became candidate at term %d", r.id, r.Term)
@@ -1108,7 +1108,7 @@ func (r *raft) campaign(t CampaignType) {
 	}
 	if voteMsg == pb.MsgPreVote {
 		r.campaignAttemptTimestamp = time.Now()
-		r.logger.Infof("Last campaign attempt timestamp: %v", r.campaignAttemptTimestamp)
+		r.logger.Debugf("Last campaign attempt timestamp: %v", r.campaignAttemptTimestamp)
 	}
 }
 
@@ -1603,13 +1603,13 @@ func stepLeader(r *raft, m pb.Message) error {
 		if m.HeartbeatInterval != nil {
 			heartbeatInterval := *m.HeartbeatInterval
 			if heartbeatInterval != -1 {
-				r.logger.Infof("Received heartbeat response from %d with interval %d", m.From, heartbeatInterval)
+				r.logger.Debugf("Received heartbeat response from %d with interval %d", m.From, heartbeatInterval)
 
 				if _, exists := r.heartbeatStates[m.From]; exists {
 					r.heartbeatStates[m.From].timeout = int(heartbeatInterval)
 				}
 			} else {
-				r.logger.Infof("Received heartbeat response from %d.", m.From)
+				r.logger.Debugf("Received heartbeat response from %d.", m.From)
 			}
 		}
 
@@ -1865,7 +1865,7 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 }
 
 func (r *raft) handleHeartbeat(m pb.Message) {
-	r.logger.Infof("Received heartbeat from %d.", m.From)
+	r.logger.Debugf("Received heartbeat from %d.", m.From)
 
 	r.raftLog.commitTo(m.Commit)
 	var heartbeatInterval int64
@@ -1880,7 +1880,7 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 			r.calculateRandomizedElectionTimeout(baseTimeout)
 		}
 	}
-	r.logger.Infof("Current randomizedElectionTimeout: %d", r.randomizedElectionTimeout)
+	r.logger.Debugf("Current randomizedElectionTimeout: %d", r.randomizedElectionTimeout)
 
 	if m.SequenceId != nil && m.SendTime != nil {
 		sequenceId := uint64(*m.SequenceId)
@@ -1889,7 +1889,7 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 
 		if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
 			packetLossRate := r.followerMetrics.calculatePacketLossRate()
-			r.logger.Infof("Calculated packet loss rate after receiving heartbeat from %d: %f.", m.From, packetLossRate)
+			r.logger.Debugf("Calculated packet loss rate after receiving heartbeat from %d: %f.", m.From, packetLossRate)
 			heartbeatInterval = r.calculateHeartbeatInterval(packetLossRate)
 		} else {
 			heartbeatInterval = -1
@@ -1899,9 +1899,9 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 	r.printFollowerMetrics(r.followerMetrics)
 
 	if heartbeatInterval != -1 {
-		r.logger.Infof("Replying to %d with heartbeat response; interval set to %d.", m.From, heartbeatInterval)
+		r.logger.Debugf("Replying to %d with heartbeat response; interval set to %d.", m.From, heartbeatInterval)
 	} else {
-		r.logger.Infof("Replying to %d with heartbeat response; interval not set due to insufficient data.", m.From)
+		r.logger.Debugf("Replying to %d with heartbeat response; interval not set due to insufficient data.", m.From)
 	}
 
 	r.send(pb.Message{
@@ -2267,16 +2267,16 @@ func (r *raft) resetHeartbeatElapsed(id uint64) {
 }
 
 func (r *raft) printFollowerMetrics(fm *followerMetrics) {
-	r.logger.Infof("Follower Metrics:")
-	r.logger.Infof("RTT Queue: %v", fm.rttQueue)
-	r.logger.Infof("Deviation Squares: %v", fm.deviationSqs)
-	r.logger.Infof("Sum: %v", fm.sum)
-	r.logger.Infof("Mean: %v", fm.mean)
-	r.logger.Infof("M2: %v", fm.m2)
-	r.logger.Infof("Count: %d", fm.count)
-	r.logger.Infof("Sequence ID Queue: %v", sequenceIdQueueToString(fm.sequenceIdQueue))
-	r.logger.Infof("Max Queue Size: %d", fm.maxQueueSize)
-	r.logger.Infof("Min Queue Size: %d", fm.minQueueSize)
+	r.logger.Debugf("Follower Metrics:")
+	r.logger.Debugf("RTT Queue: %v", fm.rttQueue)
+	r.logger.Debugf("Deviation Squares: %v", fm.deviationSqs)
+	r.logger.Debugf("Sum: %v", fm.sum)
+	r.logger.Debugf("Mean: %v", fm.mean)
+	r.logger.Debugf("M2: %v", fm.m2)
+	r.logger.Debugf("Count: %d", fm.count)
+	r.logger.Debugf("Sequence ID Queue: %v", sequenceIdQueueToString(fm.sequenceIdQueue))
+	r.logger.Debugf("Max Queue Size: %d", fm.maxQueueSize)
+	r.logger.Debugf("Min Queue Size: %d", fm.minQueueSize)
 }
 
 func sequenceIdQueueToString(queue []sequenceIdInfo) string {
