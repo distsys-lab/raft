@@ -929,10 +929,10 @@ func (r *raft) becomeCandidate() {
 		panic("invalid transition [leader -> candidate]")
 	}
 	r.step = stepCandidate
-	r.state = StateCandidate
 	r.reset(r.Term + 1)
 	r.tick = r.tickElection
 	r.Vote = r.id
+	r.state = StateCandidate
 
 	r.logger.Infof("Current state: %v, LastCampaignTimeTaken: %v", r.state, r.lastCampaignTimeTaken)
 	baseTimeoutMs := int(r.lastCampaignTimeTaken / time.Millisecond)
