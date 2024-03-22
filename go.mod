@@ -1,4 +1,4 @@
-module github.com/skoya76/raft
+module github.com/distsys-lab/raft/v4
 
 go 1.21
 
