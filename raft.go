@@ -25,7 +25,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	//"log"
 
 	"go.etcd.io/raft/v3/confchange"
 	"go.etcd.io/raft/v3/quorum"
@@ -914,8 +913,9 @@ func (r *raft) becomeFollower(term uint64, lead uint64) {
 	if r.lastElectionFailed == true {
 		r.logger.Debugf("Current state: %v, LastCampaignTimeTaken: %v", r.state, r.lastCampaignTimeTaken)
 		baseTimeoutMs := int(r.lastCampaignTimeTaken / time.Millisecond)
+		r.logger.Debugf("baseTimeoutMs: %d", baseTimeoutMs)
 		r.calculateRandomizedElectionTimeout(baseTimeoutMs)
-		r.logger.Debugf("baseTimeoutMs: %d, randomizedElectionTimeout: %d", baseTimeoutMs, r.randomizedElectionTimeout)
+		r.logger.Debugf("randomizedElectionTimeout: %d", r.randomizedElectionTimeout)
 	}
 	r.lastElectionFailed = false
 	r.followerMetrics.resetFollowerMetrics()
@@ -936,8 +936,9 @@ func (r *raft) becomeCandidate() {
 
 	r.logger.Debugf("Current state: %v, LastCampaignTimeTaken: %v", r.state, r.lastCampaignTimeTaken)
 	baseTimeoutMs := int(r.lastCampaignTimeTaken / time.Millisecond)
+	r.logger.Debugf("baseTimeoutMs: %d", baseTimeoutMs)
 	r.calculateRandomizedElectionTimeout(baseTimeoutMs)
-	r.logger.Debugf("baseTimeoutMs: %d, randomizedElectionTimeout: %d", baseTimeoutMs, r.randomizedElectionTimeout)
+	r.logger.Debugf("randomizedElectionTimeout: %d", r.randomizedElectionTimeout)
 
 	r.followerMetrics.resetFollowerMetrics()
 	r.logger.Infof("%x became candidate at term %d", r.id, r.Term)
@@ -1877,10 +1878,11 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 		newStdDev := r.followerMetrics.getStdDev()
 		if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
 			baseTimeout := int(newMean.Milliseconds() + int64(r.electionSafetyFactor)*newStdDev.Milliseconds())
-			r.calculateRandomizedElectionTimeout(baseTimeout)
+			r.calculateRandomizedElectionTimeout(int(baseTimeout/2))
 		}
 	}
-	r.logger.Debugf("Current randomizedElectionTimeout: %d", r.randomizedElectionTimeout)
+	//r.logger.Debugf("Current randomizedElectionTimeout: %d", r.randomizedElectionTimeout)
+	r.logger.Infof("Current randomizedElectionTimeout: %d", r.randomizedElectionTimeout)
 
 	if m.SequenceId != nil && m.SendTime != nil {
 		sequenceId := uint64(*m.SequenceId)
@@ -2132,7 +2134,13 @@ func (r *raft) resetRandomizedElectionTimeout() {
 }
 
 func (r *raft) calculateRandomizedElectionTimeout(baseTimeout int) {
-	r.randomizedElectionTimeout = baseTimeout + globalRand.Intn(baseTimeout)
+    // If baseTimeout is less than or equal to 1, reset the randomized election timeout.
+    // This is to prevent errors with the Intn function, which cannot handle values less than 1.
+    if baseTimeout <= 1 {
+		r.resetRandomizedElectionTimeout()
+        return
+    }
+    r.randomizedElectionTimeout = baseTimeout + globalRand.Intn(baseTimeout)
 }
 
 func (r *raft) sendTimeoutNow(to uint64) {
