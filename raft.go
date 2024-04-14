@@ -442,7 +442,7 @@ type raft struct {
 	heartbeatReachabilityGoal float64
 	campaignAttemptTimestamp  time.Time
 	lastCampaignTimeTaken     time.Duration
-	lastElectionFailed		  bool
+	lastElectionFailed        bool
 }
 
 func newRaft(c *Config) *raft {
@@ -711,11 +711,11 @@ func (r *raft) sendHeartbeat(to uint64, ctx []byte) {
 	timestamp := time.Now().UnixNano()
 	rttInt64 := int64(rtt)
 	m := pb.Message{
-		To:         to,
-		Type:       pb.MsgHeartbeat,
-		Commit:     commit,
-		Context:    ctx,
-		Rtt:        &rttInt64,
+		To:      to,
+		Type:    pb.MsgHeartbeat,
+		Commit:  commit,
+		Context: ctx,
+		// Rtt:        &rttInt64,
 		SendTime:   &timestamp,
 		SequenceId: &seqIdInt64,
 	}
@@ -1597,9 +1597,9 @@ func stepLeader(r *raft, m pb.Message) error {
 			}
 		}
 	case pb.MsgHeartbeatResp:
-		sendTime := time.Unix(0, *m.SendTime)
-		rtt := time.Since(sendTime)
-		r.leaderMetrics.updateRTT(m.From, rtt)
+		// sendTime := time.Unix(0, *m.SendTime)
+		// rtt := time.Since(sendTime)
+		// r.leaderMetrics.updateRTT(m.From, rtt)
 
 		if m.HeartbeatInterval != nil {
 			heartbeatInterval := *m.HeartbeatInterval
@@ -1873,12 +1873,13 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 
 	if m.Rtt != nil {
 		r.logger.Debugf("Received RTT from %d: %d ns.", m.From, *m.Rtt)
-		r.followerMetrics.addRTT(time.Duration(*m.Rtt))
+		// r.followerMetrics.addRTT(time.Duration(*m.Rtt))
+		// r.followerMetrics.addRTT(time.Duration(*m.Rtt)) <-ここでOWDを計算する
 		newMean := r.followerMetrics.getMean()
 		newStdDev := r.followerMetrics.getStdDev()
 		if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
 			baseTimeout := int(newMean.Milliseconds() + int64(r.electionSafetyFactor)*newStdDev.Milliseconds())
-			r.calculateRandomizedElectionTimeout(int(baseTimeout/2))
+			r.calculateRandomizedElectionTimeout(baseTimeout)
 		}
 	}
 	//r.logger.Debugf("Current randomizedElectionTimeout: %d", r.randomizedElectionTimeout)
@@ -1910,8 +1911,8 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 		To:                m.From,
 		Type:              pb.MsgHeartbeatResp,
 		Context:           m.Context,
-		Rtt:               m.Rtt,
-		SendTime:          m.SendTime,
+		// Rtt:               m.Rtt,
+		// SendTime:          m.SendTime,
 		HeartbeatInterval: &heartbeatInterval,
 	})
 }
@@ -2134,13 +2135,13 @@ func (r *raft) resetRandomizedElectionTimeout() {
 }
 
 func (r *raft) calculateRandomizedElectionTimeout(baseTimeout int) {
-    // If baseTimeout is less than or equal to 1, reset the randomized election timeout.
-    // This is to prevent errors with the Intn function, which cannot handle values less than 1.
-    if baseTimeout <= 1 {
+	// If baseTimeout is less than or equal to 1, reset the randomized election timeout.
+	// This is to prevent errors with the Intn function, which cannot handle values less than 1.
+	if baseTimeout <= 1 {
 		r.resetRandomizedElectionTimeout()
-        return
-    }
-    r.randomizedElectionTimeout = baseTimeout + globalRand.Intn(baseTimeout)
+		return
+	}
+	r.randomizedElectionTimeout = baseTimeout + globalRand.Intn(baseTimeout)
 }
 
 func (r *raft) sendTimeoutNow(to uint64) {
