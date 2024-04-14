@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	mrand "math/rand"
 
 	"go.etcd.io/raft/v3/confchange"
 	"go.etcd.io/raft/v3/quorum"
@@ -442,6 +443,7 @@ type raft struct {
 	campaignAttemptTimestamp  time.Time
 	lastCampaignTimeTaken     time.Duration
 	lastElectionFailed        bool
+	etRandomValue			  float64
 }
 
 func newRaft(c *Config) *raft {
@@ -910,7 +912,8 @@ func (r *raft) becomeFollower(term uint64, lead uint64) {
 	}
 	r.lastElectionFailed = false
 	r.followerMetrics.resetFollowerMetrics()
-
+	mrand.Seed(time.Now().UnixNano())
+	r.etRandomValue = mrand.Float64()
 	r.logger.Infof("%x became follower at term %d", r.id, r.Term)
 }
 
@@ -932,6 +935,8 @@ func (r *raft) becomeCandidate() {
 	r.logger.Debugf("randomizedElectionTimeout: %d", r.randomizedElectionTimeout)
 
 	r.followerMetrics.resetFollowerMetrics()
+	mrand.Seed(time.Now().UnixNano())
+	r.etRandomValue = mrand.Float64()
 	r.logger.Infof("%x became candidate at term %d", r.id, r.Term)
 }
 
@@ -949,6 +954,8 @@ func (r *raft) becomePreCandidate() {
 	r.lead = None
 	r.state = StatePreCandidate
 	r.followerMetrics.resetFollowerMetrics()
+	mrand.Seed(time.Now().UnixNano())
+	r.etRandomValue = mrand.Float64()
 	r.logger.Infof("%x became pre-candidate at term %d", r.id, r.Term)
 }
 
@@ -1591,7 +1598,7 @@ func stepLeader(r *raft, m pb.Message) error {
 		if m.HeartbeatInterval != nil {
 			heartbeatInterval := *m.HeartbeatInterval
 			if heartbeatInterval != -1 {
-				r.logger.Debugf("Received heartbeat response from %d with interval %d", m.From, heartbeatInterval)
+				r.logger.Infof("Received heartbeat response from %d with interval %d", m.From, heartbeatInterval)
 
 				if _, exists := r.heartbeatStates[m.From]; exists {
 					r.heartbeatStates[m.From].timeout = int(heartbeatInterval)
@@ -1862,12 +1869,12 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 	owd := time.Since(sendTime)
 	r.followerMetrics.addOWD(owd)
 	newMean := r.followerMetrics.getMean()
-	newStdDev := r.followerMetrics.getStdDev()
+	newStdDev := r.followerMetrics.getStdDev()	
 
 	r.logger.Infof("Received OWD: %v", owd)
 	if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
 		baseTimeout := int(newMean.Milliseconds() + int64(r.electionSafetyFactor)*newStdDev.Milliseconds())
-		r.calculateRandomizedElectionTimeout(baseTimeout)
+		r.randomizedElectionTimeout = baseTimeout + int(float64(baseTimeout) * r.etRandomValue)
 	}
 	r.logger.Infof("Current randomizedElectionTimeout: %d", r.randomizedElectionTimeout)
 
