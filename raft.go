@@ -21,11 +21,11 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	mrand "math/rand"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-	mrand "math/rand"
 
 	"go.etcd.io/raft/v3/confchange"
 	"go.etcd.io/raft/v3/quorum"
@@ -443,7 +443,7 @@ type raft struct {
 	campaignAttemptTimestamp  time.Time
 	lastCampaignTimeTaken     time.Duration
 	lastElectionFailed        bool
-	etRandomValue			  float64
+	etRandomValue             float64
 }
 
 func newRaft(c *Config) *raft {
@@ -705,10 +705,10 @@ func (r *raft) sendHeartbeat(to uint64, ctx []byte) {
 
 	timestamp := time.Now().UnixNano()
 	m := pb.Message{
-		To:      to,
-		Type:    pb.MsgHeartbeat,
-		Commit:  commit,
-		Context: ctx,
+		To:         to,
+		Type:       pb.MsgHeartbeat,
+		Commit:     commit,
+		Context:    ctx,
 		SendTime:   &timestamp,
 		SequenceId: &seqIdInt64,
 	}
@@ -1598,7 +1598,7 @@ func stepLeader(r *raft, m pb.Message) error {
 		if m.HeartbeatInterval != nil {
 			heartbeatInterval := *m.HeartbeatInterval
 			if heartbeatInterval != -1 {
-				r.logger.Infof("Received heartbeat response from %d with interval %d", m.From, heartbeatInterval)
+				r.logger.Debugf("Received heartbeat response from %d with interval %d", m.From, heartbeatInterval)
 
 				if _, exists := r.heartbeatStates[m.From]; exists {
 					r.heartbeatStates[m.From].timeout = int(heartbeatInterval)
@@ -1869,14 +1869,15 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 	owd := time.Since(sendTime)
 	r.followerMetrics.addOWD(owd)
 	newMean := r.followerMetrics.getMean()
-	newStdDev := r.followerMetrics.getStdDev()	
+	newStdDev := r.followerMetrics.getStdDev()
 
-	r.logger.Infof("Received OWD: %v", owd)
 	if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
 		baseTimeout := int(newMean.Milliseconds() + int64(r.electionSafetyFactor)*newStdDev.Milliseconds())
-		r.randomizedElectionTimeout = baseTimeout + int(float64(baseTimeout) * r.etRandomValue)
+		r.randomizedElectionTimeout = baseTimeout + int(float64(baseTimeout)*r.etRandomValue)
+		r.logger.Infof("OWD: %v, Base Timeout: %d, Current Randomized Election Timeout: %d", owd, baseTimeout, r.randomizedElectionTimeout)
+	} else {
+		r.logger.Infof("OWD: %v, Current Randomized Election Timeout: %d", owd, r.randomizedElectionTimeout)
 	}
-	r.logger.Infof("Current randomizedElectionTimeout: %d", r.randomizedElectionTimeout)
 
 	if m.SequenceId != nil && m.SendTime != nil {
 		sequenceId := uint64(*m.SequenceId)
@@ -1885,14 +1886,12 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 
 		if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
 			packetLossRate := r.followerMetrics.calculatePacketLossRate()
-			r.logger.Debugf("Calculated packet loss rate after receiving heartbeat from %d: %f.", m.From, packetLossRate)
 			heartbeatInterval = r.calculateHeartbeatInterval(packetLossRate)
+			r.logger.Infof("From: %d, Packet Loss Rate: %f, Heartbeat Interval: %v", m.From, packetLossRate, heartbeatInterval)
 		} else {
 			heartbeatInterval = -1
 		}
 	}
-
-	r.printFollowerMetrics(r.followerMetrics)
 
 	if heartbeatInterval != -1 {
 		r.logger.Debugf("Replying to %d with heartbeat response; interval set to %d.", m.From, heartbeatInterval)
@@ -2266,19 +2265,6 @@ func (r *raft) resetHeartbeatElapsed(id uint64) {
 	}
 }
 
-func (r *raft) printFollowerMetrics(fm *followerMetrics) {
-	r.logger.Debugf("Follower Metrics:")
-	r.logger.Debugf("OWD Queue: %v", fm.owdQueue)
-	r.logger.Debugf("Deviation Squares: %v", fm.deviationSqs)
-	r.logger.Debugf("Sum: %v", fm.sum)
-	r.logger.Debugf("Mean: %v", fm.mean)
-	r.logger.Debugf("M2: %v", fm.m2)
-	r.logger.Debugf("Count: %d", fm.count)
-	r.logger.Debugf("Sequence ID Queue: %v", sequenceIdQueueToString(fm.sequenceIdQueue))
-	r.logger.Debugf("Max Queue Size: %d", fm.maxQueueSize)
-	r.logger.Debugf("Min Queue Size: %d", fm.minQueueSize)
-}
-
 func sequenceIdQueueToString(queue []sequenceIdInfo) string {
 	var strQueue []string
 	for _, seqInfo := range queue {
@@ -2286,7 +2272,6 @@ func sequenceIdQueueToString(queue []sequenceIdInfo) string {
 	}
 	return "[" + strings.Join(strQueue, ", ") + "]"
 }
-
 
 type sequenceIdInfo struct {
 	id        uint64
