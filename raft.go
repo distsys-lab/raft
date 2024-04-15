@@ -21,11 +21,11 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	mrand "math/rand"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-	//"log"
 
 	"go.etcd.io/raft/v3/confchange"
 	"go.etcd.io/raft/v3/quorum"
@@ -436,14 +436,14 @@ type raft struct {
 	// current term.
 	pendingReadIndexMessages []pb.Message
 
-	leaderMetrics             *leaderMetrics
 	followerMetrics           *followerMetrics
 	heartbeatStates           map[uint64]*heartbeatState
 	electionSafetyFactor      int
 	heartbeatReachabilityGoal float64
 	campaignAttemptTimestamp  time.Time
 	lastCampaignTimeTaken     time.Duration
-	lastElectionFailed		  bool
+	lastElectionFailed        bool
+	etRandomValue             float64
 }
 
 func newRaft(c *Config) *raft {
@@ -473,7 +473,6 @@ func newRaft(c *Config) *raft {
 		disableProposalForwarding:   c.DisableProposalForwarding,
 		disableConfChangeValidation: c.DisableConfChangeValidation,
 		stepDownOnRemoval:           c.StepDownOnRemoval,
-		leaderMetrics:               newLeaderMetrics(),
 		followerMetrics:             newfollowerMetrics(c.MaxElectionMetricsCapacity, c.MinElectionMetricsCapacity),
 		heartbeatStates:             make(map[uint64]*heartbeatState),
 		electionSafetyFactor:        c.ElectionSafetyFactor,
@@ -698,25 +697,18 @@ func (r *raft) sendHeartbeat(to uint64, ctx []byte) {
 	// The leader MUST NOT forward the follower's commit to
 	// an unmatched index.
 	commit := min(r.prs.Progress[to].Match, r.raftLog.committed)
-	rtt, ok := r.leaderMetrics.getRTT(to)
-
-	if !ok {
-		rtt = 0
-	}
 
 	seqID := r.heartbeatStates[to].sequenceId
 	seqIdInt64 := int64(seqID)
 
-	r.logger.Debugf("Sending heartbeat to %x at term %d with RTT %v, sequence ID %d", to, r.Term, rtt, seqID)
+	r.logger.Debugf("Sending heartbeat to %x at term %d, sequence ID %d", to, r.Term, seqID)
 
 	timestamp := time.Now().UnixNano()
-	rttInt64 := int64(rtt)
 	m := pb.Message{
 		To:         to,
 		Type:       pb.MsgHeartbeat,
 		Commit:     commit,
 		Context:    ctx,
-		Rtt:        &rttInt64,
 		SendTime:   &timestamp,
 		SequenceId: &seqIdInt64,
 	}
@@ -914,12 +906,14 @@ func (r *raft) becomeFollower(term uint64, lead uint64) {
 	if r.lastElectionFailed == true {
 		r.logger.Debugf("Current state: %v, LastCampaignTimeTaken: %v", r.state, r.lastCampaignTimeTaken)
 		baseTimeoutMs := int(r.lastCampaignTimeTaken / time.Millisecond)
+		r.logger.Debugf("baseTimeoutMs: %d", baseTimeoutMs)
 		r.calculateRandomizedElectionTimeout(baseTimeoutMs)
-		r.logger.Debugf("baseTimeoutMs: %d, randomizedElectionTimeout: %d", baseTimeoutMs, r.randomizedElectionTimeout)
+		r.logger.Debugf("randomizedElectionTimeout: %d", r.randomizedElectionTimeout)
 	}
 	r.lastElectionFailed = false
 	r.followerMetrics.resetFollowerMetrics()
-
+	mrand.Seed(time.Now().UnixNano())
+	r.etRandomValue = mrand.Float64()
 	r.logger.Infof("%x became follower at term %d", r.id, r.Term)
 }
 
@@ -936,10 +930,13 @@ func (r *raft) becomeCandidate() {
 
 	r.logger.Debugf("Current state: %v, LastCampaignTimeTaken: %v", r.state, r.lastCampaignTimeTaken)
 	baseTimeoutMs := int(r.lastCampaignTimeTaken / time.Millisecond)
+	r.logger.Debugf("baseTimeoutMs: %d", baseTimeoutMs)
 	r.calculateRandomizedElectionTimeout(baseTimeoutMs)
-	r.logger.Debugf("baseTimeoutMs: %d, randomizedElectionTimeout: %d", baseTimeoutMs, r.randomizedElectionTimeout)
+	r.logger.Debugf("randomizedElectionTimeout: %d", r.randomizedElectionTimeout)
 
 	r.followerMetrics.resetFollowerMetrics()
+	mrand.Seed(time.Now().UnixNano())
+	r.etRandomValue = mrand.Float64()
 	r.logger.Infof("%x became candidate at term %d", r.id, r.Term)
 }
 
@@ -957,6 +954,8 @@ func (r *raft) becomePreCandidate() {
 	r.lead = None
 	r.state = StatePreCandidate
 	r.followerMetrics.resetFollowerMetrics()
+	mrand.Seed(time.Now().UnixNano())
+	r.etRandomValue = mrand.Float64()
 	r.logger.Infof("%x became pre-candidate at term %d", r.id, r.Term)
 }
 
@@ -1596,10 +1595,6 @@ func stepLeader(r *raft, m pb.Message) error {
 			}
 		}
 	case pb.MsgHeartbeatResp:
-		sendTime := time.Unix(0, *m.SendTime)
-		rtt := time.Since(sendTime)
-		r.leaderMetrics.updateRTT(m.From, rtt)
-
 		if m.HeartbeatInterval != nil {
 			heartbeatInterval := *m.HeartbeatInterval
 			if heartbeatInterval != -1 {
@@ -1870,17 +1865,19 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 	r.raftLog.commitTo(m.Commit)
 	var heartbeatInterval int64
 
-	if m.Rtt != nil {
-		r.logger.Debugf("Received RTT from %d: %d ns.", m.From, *m.Rtt)
-		r.followerMetrics.addRTT(time.Duration(*m.Rtt))
-		newMean := r.followerMetrics.getMean()
-		newStdDev := r.followerMetrics.getStdDev()
-		if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
-			baseTimeout := int(newMean.Milliseconds() + int64(r.electionSafetyFactor)*newStdDev.Milliseconds())
-			r.calculateRandomizedElectionTimeout(baseTimeout)
-		}
+	sendTime := time.Unix(0, *m.SendTime)
+	owd := time.Since(sendTime)
+	r.followerMetrics.addOWD(owd)
+	newMean := r.followerMetrics.getMean()
+	newStdDev := r.followerMetrics.getStdDev()
+
+	if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
+		baseTimeout := int(newMean.Milliseconds() + int64(r.electionSafetyFactor)*newStdDev.Milliseconds())
+		r.randomizedElectionTimeout = baseTimeout + int(float64(baseTimeout)*r.etRandomValue)
+		r.logger.Infof("OWD: %v, Base Timeout: %d, Current Randomized Election Timeout: %d", owd, baseTimeout, r.randomizedElectionTimeout)
+	} else {
+		r.logger.Infof("OWD: %v, Current Randomized Election Timeout: %d", owd, r.randomizedElectionTimeout)
 	}
-	r.logger.Debugf("Current randomizedElectionTimeout: %d", r.randomizedElectionTimeout)
 
 	if m.SequenceId != nil && m.SendTime != nil {
 		sequenceId := uint64(*m.SequenceId)
@@ -1889,14 +1886,12 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 
 		if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
 			packetLossRate := r.followerMetrics.calculatePacketLossRate()
-			r.logger.Debugf("Calculated packet loss rate after receiving heartbeat from %d: %f.", m.From, packetLossRate)
 			heartbeatInterval = r.calculateHeartbeatInterval(packetLossRate)
+			r.logger.Infof("From: %d, Packet Loss Rate: %f, Heartbeat Interval: %v", m.From, packetLossRate, heartbeatInterval)
 		} else {
 			heartbeatInterval = -1
 		}
 	}
-
-	r.printFollowerMetrics(r.followerMetrics)
 
 	if heartbeatInterval != -1 {
 		r.logger.Debugf("Replying to %d with heartbeat response; interval set to %d.", m.From, heartbeatInterval)
@@ -1908,8 +1903,6 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 		To:                m.From,
 		Type:              pb.MsgHeartbeatResp,
 		Context:           m.Context,
-		Rtt:               m.Rtt,
-		SendTime:          m.SendTime,
 		HeartbeatInterval: &heartbeatInterval,
 	})
 }
@@ -2132,6 +2125,12 @@ func (r *raft) resetRandomizedElectionTimeout() {
 }
 
 func (r *raft) calculateRandomizedElectionTimeout(baseTimeout int) {
+	// If baseTimeout is less than or equal to 1, reset the randomized election timeout.
+	// This is to prevent errors with the Intn function, which cannot handle values less than 1.
+	if baseTimeout <= 1 {
+		r.resetRandomizedElectionTimeout()
+		return
+	}
 	r.randomizedElectionTimeout = baseTimeout + globalRand.Intn(baseTimeout)
 }
 
@@ -2266,19 +2265,6 @@ func (r *raft) calculateHeartbeatInterval(packetLossRate float64) int64 {
 //	}
 //}
 
-func (r *raft) printFollowerMetrics(fm *followerMetrics) {
-	r.logger.Debugf("Follower Metrics:")
-	r.logger.Debugf("RTT Queue: %v", fm.rttQueue)
-	r.logger.Debugf("Deviation Squares: %v", fm.deviationSqs)
-	r.logger.Debugf("Sum: %v", fm.sum)
-	r.logger.Debugf("Mean: %v", fm.mean)
-	r.logger.Debugf("M2: %v", fm.m2)
-	r.logger.Debugf("Count: %d", fm.count)
-	r.logger.Debugf("Sequence ID Queue: %v", sequenceIdQueueToString(fm.sequenceIdQueue))
-	r.logger.Debugf("Max Queue Size: %d", fm.maxQueueSize)
-	r.logger.Debugf("Min Queue Size: %d", fm.minQueueSize)
-}
-
 func sequenceIdQueueToString(queue []sequenceIdInfo) string {
 	var strQueue []string
 	for _, seqInfo := range queue {
@@ -2287,35 +2273,13 @@ func sequenceIdQueueToString(queue []sequenceIdInfo) string {
 	return "[" + strings.Join(strQueue, ", ") + "]"
 }
 
-type leaderMetrics struct {
-	rtts map[uint64]time.Duration
-}
-
-func newLeaderMetrics() *leaderMetrics {
-	return &leaderMetrics{
-		rtts: make(map[uint64]time.Duration),
-	}
-}
-
-func (ls *leaderMetrics) updateRTT(followerID uint64, rtt time.Duration) {
-	if ls.rtts == nil {
-		ls.rtts = make(map[uint64]time.Duration)
-	}
-	ls.rtts[followerID] = rtt
-}
-
-func (ls *leaderMetrics) getRTT(followerID uint64) (time.Duration, bool) {
-	rtt, ok := ls.rtts[followerID]
-	return rtt, ok
-}
-
 type sequenceIdInfo struct {
 	id        uint64
 	timestamp time.Time
 }
 
 type followerMetrics struct {
-	rttQueue        []time.Duration
+	owdQueue        []time.Duration
 	deviationSqs    []float64
 	sum             time.Duration
 	mean            time.Duration
@@ -2332,7 +2296,7 @@ func (f *followerMetrics) isSequenceIdQueueGreaterThanMin() bool {
 
 func newfollowerMetrics(maxQueueSize int, minQueueSize int) *followerMetrics {
 	return &followerMetrics{
-		rttQueue:        make([]time.Duration, 0),
+		owdQueue:        make([]time.Duration, 0),
 		deviationSqs:    make([]float64, 0),
 		sum:             0,
 		mean:            0,
@@ -2345,7 +2309,7 @@ func newfollowerMetrics(maxQueueSize int, minQueueSize int) *followerMetrics {
 }
 
 func (fm *followerMetrics) resetFollowerMetrics() {
-	fm.rttQueue = make([]time.Duration, 0)
+	fm.owdQueue = make([]time.Duration, 0)
 	fm.deviationSqs = make([]float64, 0)
 	fm.sum = 0
 	fm.mean = 0
@@ -2354,23 +2318,23 @@ func (fm *followerMetrics) resetFollowerMetrics() {
 	fm.sequenceIdQueue = make([]sequenceIdInfo, 0)
 }
 
-func (fm *followerMetrics) addRTT(rtt time.Duration) {
-	if len(fm.rttQueue) == fm.maxQueueSize {
-		oldestRtt := fm.rttQueue[0]
-		fm.rttQueue = fm.rttQueue[1:]
-		fm.sum -= oldestRtt
+func (fm *followerMetrics) addOWD(owd time.Duration) {
+	if len(fm.owdQueue) == fm.maxQueueSize {
+		oldestOWD := fm.owdQueue[0]
+		fm.owdQueue = fm.owdQueue[1:]
+		fm.sum -= oldestOWD
 		fm.count--
 		oldestDevSq := fm.deviationSqs[0]
 		fm.deviationSqs = fm.deviationSqs[1:]
 		fm.m2 -= oldestDevSq
 	}
 
-	fm.rttQueue = append(fm.rttQueue, rtt)
-	fm.sum += rtt
+	fm.owdQueue = append(fm.owdQueue, owd)
+	fm.sum += owd
 	fm.count++
 	newMean := float64(fm.sum) / float64(fm.count)
 	fm.mean = time.Duration(newMean)
-	deviation := float64(rtt) - newMean
+	deviation := float64(owd) - newMean
 	deviationSq := deviation * deviation
 	fm.m2 += deviationSq
 	fm.deviationSqs = append(fm.deviationSqs, deviationSq)
