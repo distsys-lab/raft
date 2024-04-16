@@ -1874,9 +1874,9 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 	if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
 		baseTimeout := int(newMean.Milliseconds() + int64(r.electionSafetyFactor)*newStdDev.Milliseconds())
 		r.randomizedElectionTimeout = baseTimeout + int(float64(baseTimeout)*r.etRandomValue)
-		r.logger.Infof("OWD: %v, Base Timeout: %d, Current Randomized Election Timeout: %d", owd, baseTimeout, r.randomizedElectionTimeout)
+		r.logger.Infof("Received OWD: %v, BaseTimeout: %d, Current randomizedElectionTimeout: %d", owd, baseTimeout, r.randomizedElectionTimeout)
 	} else {
-		r.logger.Infof("OWD: %v, Current Randomized Election Timeout: %d", owd, r.randomizedElectionTimeout)
+		r.logger.Infof("Received OWD: %v, Current randomizedElectionTimeout: %d", owd, r.randomizedElectionTimeout)
 	}
 
 	if m.SequenceId != nil && m.SendTime != nil {
@@ -1887,7 +1887,7 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 		if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
 			packetLossRate := r.followerMetrics.calculatePacketLossRate()
 			heartbeatInterval = r.calculateHeartbeatInterval(packetLossRate)
-			r.logger.Infof("From: %d, Packet Loss Rate: %f, Heartbeat Interval: %v", m.From, packetLossRate, heartbeatInterval)
+			r.logger.Infof("Calculated packet loss rate after receiving heartbeat from %d: %f, Heartbeat Interval: %v", m.From, packetLossRate, heartbeatInterval)
 		} else {
 			heartbeatInterval = -1
 		}
