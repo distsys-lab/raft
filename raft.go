@@ -675,6 +675,11 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 	if err := pr.UpdateOnEntriesSend(len(ents), uint64(payloadsSize(ents)), nextIndex); err != nil {
 		r.logger.Panicf("%x: %v", r.id, err)
 	}
+
+	r.incrementAllPeerSequenceId()
+	seqID := r.heartbeatStates[to].sequenceId
+	seqIdInt64 := int64(seqID)
+	timestamp := time.Now().UnixNano()
 	// NB: pr has been updated, but we make sure to only use its old values below.
 	r.send(pb.Message{
 		To:      to,
@@ -683,6 +688,8 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 		LogTerm: lastTerm,
 		Entries: ents,
 		Commit:  r.raftLog.committed,
+		SendTime: &timestamp,
+		SequenceId: &seqIdInt64,
 	})
 	r.resetHeartbeatElapsed(to)
 	return true
@@ -1406,7 +1413,18 @@ func stepLeader(r *raft, m pb.Message) error {
 	case pb.MsgAppResp:
 		// NB: this code path is also hit from (*raft).advance, where the leader steps
 		// an MsgAppResp to acknowledge the appended entries in the last Ready.
+		if m.HeartbeatInterval != nil {
+			heartbeatInterval := *m.HeartbeatInterval
+			if heartbeatInterval != -1 {
+				r.logger.Debugf("Received heartbeat response from %d with interval %d", m.From, heartbeatInterval)
 
+				if _, exists := r.heartbeatStates[m.From]; exists {
+					r.heartbeatStates[m.From].timeout = int(heartbeatInterval)
+				}
+			} else {
+				r.logger.Debugf("Received heartbeat response from %d.", m.From)
+			}
+		}
 		pr.RecentActive = true
 
 		if m.Reject {
@@ -1831,6 +1849,43 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 	r.logger.Debugf("%x [logterm: %d, index: %d] rejected MsgApp [logterm: %d, index: %d] from %x",
 		r.id, r.raftLog.zeroTermOnOutOfBounds(r.raftLog.term(m.Index)), m.Index, m.LogTerm, m.Index, m.From)
 
+	
+	var heartbeatInterval int64
+
+	sendTime := time.Unix(0, *m.SendTime)
+	owd := time.Since(sendTime)
+	r.followerMetrics.addOWD(owd)
+	newMean := r.followerMetrics.getMean()
+	newStdDev := r.followerMetrics.getStdDev()
+	
+	if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
+		baseTimeout := int(newMean.Milliseconds() + int64(r.electionSafetyFactor)*newStdDev.Milliseconds())
+		r.randomizedElectionTimeout = baseTimeout + int(float64(baseTimeout)*r.etRandomValue)
+		r.logger.Infof("OWD: %v, Base Timeout: %d, Current Randomized Election Timeout: %d", owd, baseTimeout, r.randomizedElectionTimeout)
+	} else {
+		r.logger.Infof("OWD: %v, Current Randomized Election Timeout: %d", owd, r.randomizedElectionTimeout)
+	}
+	
+	if m.SequenceId != nil && m.SendTime != nil {
+		sequenceId := uint64(*m.SequenceId)
+		timestamp := time.Unix(0, int64(*m.SendTime))
+		r.followerMetrics.addSequenceIdInfo(sequenceId, timestamp)
+	
+		if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
+			packetLossRate := r.followerMetrics.calculatePacketLossRate()
+			heartbeatInterval = r.calculateHeartbeatInterval(packetLossRate)
+			r.logger.Infof("From: %d, Packet Loss Rate: %f, Heartbeat Interval: %v", m.From, packetLossRate, heartbeatInterval)
+		} else {
+			heartbeatInterval = -1
+		}
+	}
+	
+	if heartbeatInterval != -1 {
+		r.logger.Debugf("Replying to %d with heartbeat response; interval set to %d.", m.From, heartbeatInterval)
+	} else {
+		r.logger.Debugf("Replying to %d with heartbeat response; interval not set due to insufficient data.", m.From)
+	}
+
 	// Our log does not match the leader's at index m.Index. Return a hint to the
 	// leader - a guess on the maximal (index, term) at which the logs match. Do
 	// this by searching through the follower's log for the maximum (index, term)
@@ -1856,6 +1911,7 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 		Reject:     true,
 		RejectHint: hintIndex,
 		LogTerm:    hintTerm,
+		HeartbeatInterval: &heartbeatInterval,
 	})
 }
 
@@ -2264,6 +2320,14 @@ func (r *raft) resetHeartbeatElapsed(id uint64) {
 	} else {
 	}
 }
+
+func (r *raft) incrementAllPeerSequenceId() {
+    for id, hbState := range r.heartbeatStates {
+        hbState.sequenceId++
+        r.heartbeatStates[id] = hbState
+    }
+}
+
 
 func sequenceIdQueueToString(queue []sequenceIdInfo) string {
 	var strQueue []string
