@@ -692,6 +692,8 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 		SequenceId: &seqIdInt64,
 	})
 	r.resetHeartbeatElapsed(to)
+	r.logger.Infof("MsgApp: Sending to %d, lastIndex %d, lastTerm %d, committed %d, seqId %d, timestamp %d",
+    to, lastIndex, lastTerm, r.raftLog.committed, seqIdInt64, timestamp)
 	return true
 }
 
@@ -1838,18 +1840,6 @@ func stepFollower(r *raft, m pb.Message) error {
 }
 
 func (r *raft) handleAppendEntries(m pb.Message) {
-	if m.Index < r.raftLog.committed {
-		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: r.raftLog.committed})
-		return
-	}
-	if mlastIndex, ok := r.raftLog.maybeAppend(m.Index, m.LogTerm, m.Commit, m.Entries...); ok {
-		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: mlastIndex})
-		return
-	}
-	r.logger.Debugf("%x [logterm: %d, index: %d] rejected MsgApp [logterm: %d, index: %d] from %x",
-		r.id, r.raftLog.zeroTermOnOutOfBounds(r.raftLog.term(m.Index)), m.Index, m.LogTerm, m.Index, m.From)
-
-	
 	var heartbeatInterval int64
 
 	sendTime := time.Unix(0, *m.SendTime)
@@ -1885,6 +1875,22 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 	} else {
 		r.logger.Debugf("Replying to %d with heartbeat response; interval not set due to insufficient data.", m.From)
 	}
+
+	r.logger.Infof("MsgApp")
+
+	if m.Index < r.raftLog.committed {
+		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: r.raftLog.committed})
+		return
+	}
+	if mlastIndex, ok := r.raftLog.maybeAppend(m.Index, m.LogTerm, m.Commit, m.Entries...); ok {
+		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: mlastIndex})
+		return
+	}
+	r.logger.Debugf("%x [logterm: %d, index: %d] rejected MsgApp [logterm: %d, index: %d] from %x",
+		r.id, r.raftLog.zeroTermOnOutOfBounds(r.raftLog.term(m.Index)), m.Index, m.LogTerm, m.Index, m.From)
+
+	
+
 
 	// Our log does not match the leader's at index m.Index. Return a hint to the
 	// leader - a guess on the maximal (index, term) at which the logs match. Do
