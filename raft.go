@@ -603,8 +603,6 @@ func (r *raft) send(m pb.Message) {
 		if m.To == r.id {
 			r.logger.Panicf("message should not be self-addressed when sending %s", m.Type)
 		}
-		r.logger.Infof("Send Message: Type=%v, From=%d, To=%d, Term=%d, LogTerm=%d, Index=%d, Commit=%d, SequenceId=%v, SendTime=%v, Entries=%v",
-			m.Type, m.From, m.To, m.Term, m.LogTerm, m.Index, m.Commit, m.SequenceId, m.SendTime, m.Entries)
 		r.msgs = append(r.msgs, m)
 	}
 }
@@ -669,7 +667,6 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 		r.logger.Debugf("%x paused sending replication messages to %x [%s]", r.id, to, pr)
 
 		r.send(pb.Message{To: to, Type: pb.MsgSnap, Snapshot: &snapshot})
-		r.resetHeartbeatElapsed(to)
 		return true
 	}
 
@@ -1128,10 +1125,6 @@ func (r *raft) poll(id uint64, t pb.MessageType, v bool) (granted int, rejected 
 
 func (r *raft) Step(m pb.Message) error {
 	// Handle the message term, which may result in our stepping down to a follower.
-	if m.Type == pb.MsgApp {
-		r.logger.Infof("Processing MsgApp: From=%d, To=%d, Term=%d, Entries=%v, SendTime=%d, SequenceId=%d",
-			m.From, m.To, m.Term, m.Entries, m.SendTime, m.SequenceId)
-	}
 	switch {
 	case m.Term == 0:
 		// local message
@@ -1415,7 +1408,6 @@ func stepLeader(r *raft, m pb.Message) error {
 	case pb.MsgAppResp:
 		// NB: this code path is also hit from (*raft).advance, where the leader steps
 		// an MsgAppResp to acknowledge the appended entries in the last Ready.
-		r.logger.Infof("%v receved heatbeat", m.HeartbeatInterval)
 		r.processMessageHeartbeatInterval(m)
 		pr.RecentActive = true
 
@@ -1818,8 +1810,6 @@ func stepFollower(r *raft, m pb.Message) error {
 }
 
 func (r *raft) handleAppendEntries(m pb.Message) {
-	r.logger.Infof("HandleAppendEntries received: Type=%v, From=%d, To=%d, Term=%d, LogTerm=%d, Index=%d, Commit=%d, SequenceId=%d, SendTime=%d, Entries=%v",
-		m.Type, m.From, m.To, m.Term, m.LogTerm, m.Index, m.Commit, m.SequenceId, m.SendTime, m.Entries)
 	if m.Index < r.raftLog.committed {
 		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: r.raftLog.committed})
 		return
@@ -1862,8 +1852,6 @@ func (r *raft) handleAppendEntries(m pb.Message) {
 
 func (r *raft) handleHeartbeat(m pb.Message) {
 	r.logger.Debugf("Received heartbeat from %d.", m.From)
-	//r.logger.Infof("HandleAppendEntries received: Type=%v, From=%d, To=%d, Term=%d, LogTerm=%d, Index=%d, Commit=%d, SequenceId=%v, SendTime=%v, Entries=%v",
-	//m.Type, m.From, m.To, m.Term, m.LogTerm, m.Index, m.Commit, m.SequenceId, m.SendTime, m.Entries)
 	r.raftLog.commitTo(m.Commit)
 	heartbeatInterval := uint64(r.processMessageMetadata(m))
 	r.send(pb.Message{
@@ -2208,55 +2196,52 @@ func sendMsgReadIndexResponse(r *raft, m pb.Message) {
 	}
 }
 
-// The following set of codes is for the optimization of election parameters
 func (r *raft) processMessageMetadata(m pb.Message) uint64 {
-	if m.SendTime == 0 || m.SequenceId == 0 {
-		return 0
-	}
+    if m.SendTime == 0 || m.SequenceId == 0 {
+        r.logger.Debugf("Received message with either SendTime: %d or SequenceId: %d as zero, ignoring.", m.SendTime, m.SequenceId)
+        return 0
+    }
 
-	owd := uint64(time.Now().UnixMilli()) - m.SendTime
-	r.followerMetrics.addOWD(owd)
-	newMean := r.followerMetrics.getMean()
-	newStdDev := r.followerMetrics.getStdDev()
+    owd := uint64(time.Now().UnixMilli()) - m.SendTime
+    r.followerMetrics.addOWD(owd)
+    newMean := r.followerMetrics.getMean()
+    newStdDev := r.followerMetrics.getStdDev()
 
-	if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
-		baseTimeout := newMean + float64(r.electionSafetyFactor) * float64(newStdDev)
-		r.randomizedElectionTimeout = int(baseTimeout + float64(baseTimeout) * r.etRandomValue)
-		r.logger.Infof("OWD: %v, Base Timeout: %v, Current Randomized Election Timeout: %v", owd, baseTimeout, r.randomizedElectionTimeout)
-	} else {
-		r.logger.Infof("OWD: %v, Current Randomized Election Timeout: %v", owd, r.randomizedElectionTimeout)
-	}
+	r.printFollowerMetrics(r.followerMetrics)
 
-	var heartbeatInterval uint64
+    if r.followerMetrics.isSequenceIdQueueGreaterThanMin(r.logger) {
+        baseTimeout := int(newMean + float64(r.electionSafetyFactor) * float64(newStdDev))
+        r.randomizedElectionTimeout = int(float64(baseTimeout) + float64(baseTimeout) * r.etRandomValue)
+        r.logger.Debugf("Computed OWD: %v, Base Timeout: %v, Set Randomized Election Timeout: %v", owd, baseTimeout, r.randomizedElectionTimeout)
+    } else {
+        r.logger.Debugf("Computed OWD: %v, Maintained Randomized Election Timeout: %v without updating due to insufficient data.", owd, r.randomizedElectionTimeout)
+    }
 
-	timestamp := time.Unix(0, int64(m.SendTime))
-	r.followerMetrics.addSequenceIdInfo(m.SequenceId, timestamp)
+    var heartbeatInterval uint64
+    timestamp := time.Unix(0, int64(m.SendTime))
+    r.followerMetrics.addSequenceIdInfo(m.SequenceId, timestamp)
 
-	if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
-		packetLossRate := r.followerMetrics.calculatePacketLossRate()
-		heartbeatInterval = r.calculateHeartbeatInterval(packetLossRate)
-		r.logger.Infof("From: %d, Packet Loss Rate: %f, Heartbeat Interval: %v", m.From, packetLossRate, heartbeatInterval)
-		r.logger.Debugf("Replying to %d with heartbeat response; interval set to %d.", m.From, heartbeatInterval)
-	} else {
-		heartbeatInterval = 0
-		
-		r.logger.Debugf("Replying to %d with heartbeat response; interval not set due to insufficient data.", m.From)
-	}
+    if r.followerMetrics.isSequenceIdQueueGreaterThanMin(r.logger) {
+        packetLossRate := r.followerMetrics.calculatePacketLossRate()
+        heartbeatInterval = r.calculateHeartbeatInterval(packetLossRate)
+        r.logger.Debugf("Calculated Packet Loss Rate: %f for node %d, Set Heartbeat Interval: %v", packetLossRate, m.From, heartbeatInterval)
+    } else {
+        heartbeatInterval = 0
+        r.logger.Debugf("Insufficient data for calculating packet loss rate for node %d, Heartbeat Interval not set.", m.From)
+    }
 
-	return heartbeatInterval
+    return heartbeatInterval
 }
 
 func (r *raft) processMessageHeartbeatInterval(m pb.Message) {
     if m.HeartbeatInterval == 0 {
-        r.logger.Infof("Received heartbeat interval of 0 from %d, ignoring.", m.From)
+        r.logger.Debugf("Received heartbeat interval of 0 from %d, ignoring.", m.From)
         return
     }
 
     if state, exists := r.heartbeatStates[m.From]; exists {
         state.timeout = int(m.HeartbeatInterval)
-        r.logger.Infof("Updated heartbeat timeout to %d for node %d.", m.HeartbeatInterval, m.From)
-    } else {
-        r.logger.Infof("Created new heartbeat state with timeout %d for node %d.", m.HeartbeatInterval, m.From)
+        r.logger.Debugf("Updated heartbeat timeout to %d for node %d.", m.HeartbeatInterval, m.From)
     }
 }
 
@@ -2285,6 +2270,7 @@ func (r *raft) resetHeartbeatElapsed(id uint64) {
 
 func (r *raft) incrementAllPeerSequenceId() {
 	for id, hbState := range r.heartbeatStates {
+		hbState.elapsed = 0
 		hbState.sequenceId++
 		r.heartbeatStates[id] = hbState
 	}
@@ -2315,9 +2301,28 @@ type followerMetrics struct {
 	minQueueSize    int
 }
 
-func (f *followerMetrics) isSequenceIdQueueGreaterThanMin() bool {
-	return len(f.sequenceIdQueue) > f.minQueueSize
+func (r *raft) printFollowerMetrics(fm *followerMetrics) {
+	r.logger.Debugf("Follower Metrics:")
+	r.logger.Debugf("OWD Queue: %v", fm.owdQueue)
+	r.logger.Debugf("Deviation Squares: %v", fm.deviationSqs)
+	r.logger.Debugf("Sum: %v", fm.sum)
+	r.logger.Debugf("Mean: %v", fm.mean)
+	r.logger.Debugf("M2: %v", fm.m2)
+	r.logger.Debugf("Count: %d", fm.count)
+	r.logger.Debugf("Sequence ID Queue: %v", sequenceIdQueueToString(fm.sequenceIdQueue))
 }
+
+func (f *followerMetrics) isSequenceIdQueueGreaterThanMin(logger Logger) bool {
+    currentLength := len(f.sequenceIdQueue)
+    result := currentLength > f.minQueueSize
+    if result {
+        logger.Debug("Sequence ID Queue Length: %d is greater than Min Queue Size: %d, returning true", currentLength, f.minQueueSize)
+    } else {
+        logger.Debug("Sequence ID Queue Length: %d is not greater than Min Queue Size: %d, returning false", currentLength, f.minQueueSize)
+    }
+    return result
+}
+
 
 func newfollowerMetrics(maxQueueSize int, minQueueSize int) *followerMetrics {
 	return &followerMetrics{
