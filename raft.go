@@ -667,7 +667,6 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 		r.logger.Debugf("%x paused sending replication messages to %x [%s]", r.id, to, pr)
 
 		r.send(pb.Message{To: to, Type: pb.MsgSnap, Snapshot: &snapshot})
-		r.resetHeartbeatElapsed(to)
 		return true
 	}
 
@@ -684,7 +683,6 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 		Entries: ents,
 		Commit:  r.raftLog.committed,
 	})
-	r.resetHeartbeatElapsed(to)
 	return true
 }
 
