@@ -106,9 +106,9 @@ message Message {
 	// is complete. Populated for MsgStorageAppend and MsgStorageApply messages.
 	repeated Message     responses   = 14 [(gogoproto.nullable) = false];
 	// The following fields are used for dynamic optimization of election parameters.
-	optional int64 send_time = 15 [(gogoproto.nullable) = false];
-	optional int64 sequence_id = 16 [(gogoproto.nullable) = false];
-	optional int64 heartbeat_interval = 17 [(gogoproto.nullable) = false];
+	optional uint64 send_time = 15 [(gogoproto.nullable) = false];
+	optional uint64 sequence_id = 16 [(gogoproto.nullable) = false];
+	optional uint64 heartbeat_interval = 17 [(gogoproto.nullable) = false];
 }
 
 message HardState {
