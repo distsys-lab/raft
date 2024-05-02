@@ -2255,13 +2255,13 @@ func (r *raft) calculateHeartbeatInterval(packetLossRate float64) int64 {
 	return heartbeatInterval
 }
 
-func (r *raft) resetHeartbeatElapsed(id uint64) {
-	if hbState, ok := r.heartbeatStates[id]; ok {
-		hbState.elapsed = 0
-		r.heartbeatStates[id] = hbState
-	} else {
-	}
-}
+//func (r *raft) resetHeartbeatElapsed(id uint64) {
+//	if hbState, ok := r.heartbeatStates[id]; ok {
+//		hbState.elapsed = 0
+//		r.heartbeatStates[id] = hbState
+//	} else {
+//	}
+//}
 
 func sequenceIdQueueToString(queue []sequenceIdInfo) string {
 	var strQueue []string
