@@ -436,6 +436,7 @@ type raft struct {
 	// current term.
 	pendingReadIndexMessages []pb.Message
 
+	leaderMetrics             *leaderMetrics
 	followerMetrics           *followerMetrics
 	heartbeatStates           map[uint64]*heartbeatState
 	electionSafetyFactor      int
@@ -473,6 +474,7 @@ func newRaft(c *Config) *raft {
 		disableProposalForwarding:   c.DisableProposalForwarding,
 		disableConfChangeValidation: c.DisableConfChangeValidation,
 		stepDownOnRemoval:           c.StepDownOnRemoval,
+		leaderMetrics:               newLeaderMetrics(),
 		followerMetrics:             newfollowerMetrics(c.MaxElectionMetricsCapacity, c.MinElectionMetricsCapacity),
 		heartbeatStates:             make(map[uint64]*heartbeatState),
 		electionSafetyFactor:        c.ElectionSafetyFactor,
@@ -702,11 +704,13 @@ func (r *raft) sendHeartbeat(to uint64, ctx []byte) {
 	r.logger.Debugf("Sending heartbeat to %x at term %d, sequence ID %d", to, r.Term, seqID)
 
 	timestamp := time.Now().UnixNano()
+	rttInt64 := int64(rtt)
 	m := pb.Message{
 		To:         to,
 		Type:       pb.MsgHeartbeat,
 		Commit:     commit,
 		Context:    ctx,
+		Rtt:        &rttInt64,
 		SendTime:   &timestamp,
 		SequenceId: &seqIdInt64,
 	}
@@ -1863,19 +1867,17 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 	r.raftLog.commitTo(m.Commit)
 	var heartbeatInterval int64
 
-	sendTime := time.Unix(0, *m.SendTime)
-	owd := time.Since(sendTime)
-	r.followerMetrics.addOWD(owd)
-	newMean := r.followerMetrics.getMean()
-	newStdDev := r.followerMetrics.getStdDev()
-
-	if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
-		baseTimeout := int(newMean.Milliseconds() + int64(r.electionSafetyFactor)*newStdDev.Milliseconds())
-		r.randomizedElectionTimeout = baseTimeout + int(float64(baseTimeout)*r.etRandomValue)
-		r.logger.Infof("Received OWD: %v, BaseTimeout: %d, Current randomizedElectionTimeout: %d", owd, baseTimeout, r.randomizedElectionTimeout)
-	} else {
-		r.logger.Infof("Received OWD: %v, Current randomizedElectionTimeout: %d", owd, r.randomizedElectionTimeout)
+	if m.Rtt != nil {
+		r.logger.Debugf("Received RTT from %d: %d ns.", m.From, *m.Rtt)
+		r.followerMetrics.addRTT(time.Duration(*m.Rtt))
+		newMean := r.followerMetrics.getMean()
+		newStdDev := r.followerMetrics.getStdDev()
+		if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
+			baseTimeout := int(newMean.Milliseconds() + int64(r.electionSafetyFactor)*newStdDev.Milliseconds())
+			r.calculateRandomizedElectionTimeout(baseTimeout)
+		}
 	}
+	r.logger.Debugf("Current randomizedElectionTimeout: %d", r.randomizedElectionTimeout)
 
 	if m.SequenceId != nil && m.SendTime != nil {
 		sequenceId := uint64(*m.SequenceId)
@@ -2271,6 +2273,28 @@ func sequenceIdQueueToString(queue []sequenceIdInfo) string {
 	return "[" + strings.Join(strQueue, ", ") + "]"
 }
 
+type leaderMetrics struct {
+	rtts map[uint64]time.Duration
+}
+
+func newLeaderMetrics() *leaderMetrics {
+	return &leaderMetrics{
+		rtts: make(map[uint64]time.Duration),
+	}
+}
+
+func (ls *leaderMetrics) updateRTT(followerID uint64, rtt time.Duration) {
+	if ls.rtts == nil {
+		ls.rtts = make(map[uint64]time.Duration)
+	}
+	ls.rtts[followerID] = rtt
+}
+
+func (ls *leaderMetrics) getRTT(followerID uint64) (time.Duration, bool) {
+	rtt, ok := ls.rtts[followerID]
+	return rtt, ok
+}
+
 type sequenceIdInfo struct {
 	id        uint64
 	timestamp time.Time
@@ -2286,6 +2310,19 @@ type followerMetrics struct {
 	sequenceIdQueue []sequenceIdInfo
 	maxQueueSize    int
 	minQueueSize    int
+}
+
+func (r *raft) printFollowerMetrics(fm *followerMetrics) {
+	r.logger.Debugf("Follower Metrics:")
+	r.logger.Debugf("RTT Queue: %v", fm.rttQueue)
+	r.logger.Debugf("Deviation Squares: %v", fm.deviationSqs)
+	r.logger.Debugf("Sum: %v", fm.sum)
+	r.logger.Debugf("Mean: %v", fm.mean)
+	r.logger.Debugf("M2: %v", fm.m2)
+	r.logger.Debugf("Count: %d", fm.count)
+	r.logger.Debugf("Sequence ID Queue: %v", sequenceIdQueueToString(fm.sequenceIdQueue))
+	r.logger.Debugf("Max Queue Size: %d", fm.maxQueueSize)
+	r.logger.Debugf("Min Queue Size: %d", fm.minQueueSize)
 }
 
 func (f *followerMetrics) isSequenceIdQueueGreaterThanMin() bool {
