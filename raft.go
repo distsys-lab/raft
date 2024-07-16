@@ -144,6 +144,8 @@ type Config struct {
 	MinElectionMetricsCapacity int
 	ElectionSafetyFactor       int
 	HeartbeatReachabilityGoal  float64
+	K						int64
+	OptimizeHeartbeatInterval  bool
 
 	// Storage is the storage for raft. raft generates entries and states to be
 	// stored in storage. raft reads the persisted entries and states out of
@@ -444,6 +446,8 @@ type raft struct {
 	campaignAttemptTimestamp  time.Time
 	lastCampaignTimeTaken     time.Duration
 	lastElectionFailed		  bool
+	K                 int64
+	optimizeHeartbeatInterval bool
 }
 
 func newRaft(c *Config) *raft {
@@ -478,6 +482,8 @@ func newRaft(c *Config) *raft {
 		heartbeatStates:             make(map[uint64]*heartbeatState),
 		electionSafetyFactor:        c.ElectionSafetyFactor,
 		heartbeatReachabilityGoal:   c.HeartbeatReachabilityGoal,
+		K:                 c.K,
+		optimizeHeartbeatInterval: c.OptimizeHeartbeatInterval,
 	}
 
 	cfg, prs, err := confchange.Restore(confchange.Changer{
@@ -1877,6 +1883,8 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 	}
 	r.logger.Debugf("Current randomizedElectionTimeout: %d", r.randomizedElectionTimeout)
 
+	
+
 	if m.SequenceId != nil && m.SendTime != nil {
 		sequenceId := uint64(*m.SequenceId)
 		timestamp := time.Unix(0, int64(*m.SendTime))
@@ -1884,8 +1892,8 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 
 		if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
 			packetLossRate := r.followerMetrics.calculatePacketLossRate()
-			r.logger.Debugf("Calculated packet loss rate after receiving heartbeat from %d: %f.", m.From, packetLossRate)
 			heartbeatInterval = r.calculateHeartbeatInterval(packetLossRate)
+			r.logger.Debugf("Calculated packet loss rate after receiving heartbeat from %d: %f, Using K: %d, optimizeHeartbeatInterval: %t, calculated heartbeat interval: %d.", m.From, packetLossRate, r.K, r.optimizeHeartbeatInterval, heartbeatInterval)
 		} else {
 			heartbeatInterval = -1
 		}
@@ -2241,10 +2249,16 @@ func sendMsgReadIndexResponse(r *raft, m pb.Message) {
 
 func (r *raft) calculateHeartbeatInterval(packetLossRate float64) int64 {
 	var ceilLogTerm float64
+
+	if r.optimizeHeartbeatInterval == true {
+		heartbeatInterval := int64(math.Floor(float64(r.randomizedElectionTimeout) / (float64(r.K) + 1)))
+		return heartbeatInterval
+	}
+
 	if packetLossRate <= 0 {
 		ceilLogTerm = 1
 	} else {
-		logTerm := math.Log(1-r.heartbeatReachabilityGoal)/math.Log(packetLossRate) + 1
+		logTerm := math.Log(1-r.heartbeatReachabilityGoal)/math.Log(packetLossRate)
 		ceilLogTerm = math.Ceil(logTerm)
 	}
 
