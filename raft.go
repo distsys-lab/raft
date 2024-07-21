@@ -2246,23 +2246,29 @@ func sendMsgReadIndexResponse(r *raft, m pb.Message) {
 }
 
 // The following set of codes is for the optimization of election parameters
-
 func (r *raft) calculateHeartbeatInterval(packetLossRate float64) int64 {
 	var ceilLogTerm float64
 
-	if r.optimizeHeartbeatInterval == true {
+	if r.optimizeHeartbeatInterval == false {
 		heartbeatInterval := int64(math.Floor(float64(r.randomizedElectionTimeout) / (float64(r.K) + 1)))
+		r.logger.Debugf("Optimized Heartbeat Interval: %d (randomizedElectionTimeout: %d, K: %d)", 
+			heartbeatInterval, r.randomizedElectionTimeout, r.K)
 		return heartbeatInterval
 	}
 
 	if packetLossRate <= 0 {
 		ceilLogTerm = 1
+		r.logger.Debugf("Packet Loss Rate: %f, setting ceilLogTerm to 1", packetLossRate)
 	} else {
 		logTerm := math.Log(1-r.heartbeatReachabilityGoal)/math.Log(packetLossRate)
 		ceilLogTerm = math.Ceil(logTerm)
+		r.logger.Debugf("Packet Loss Rate: %f, Log Term: %f, Ceil Log Term: %f", 
+			packetLossRate, logTerm, ceilLogTerm)
 	}
 
 	heartbeatInterval := int64(math.Floor(float64(r.randomizedElectionTimeout) / (ceilLogTerm + 1)))
+	r.logger.Debugf("Calculated Heartbeat Interval: %d (randomizedElectionTimeout: %d, ceilLogTerm: %f)", 
+		heartbeatInterval, r.randomizedElectionTimeout, ceilLogTerm)
 
 	return heartbeatInterval
 }
