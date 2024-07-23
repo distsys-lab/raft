@@ -1896,6 +1896,7 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 			r.logger.Debugf("Calculated packet loss rate after receiving heartbeat from %d: %f, Using K: %d, optimizeHeartbeatInterval: %t, calculated heartbeat interval: %d.", m.From, packetLossRate, r.K, r.optimizeHeartbeatInterval, heartbeatInterval)
 		} else {
 			heartbeatInterval = -1
+			r.logger.Debugf("Insufficient data to calculate heartbeat interval after receiving heartbeat from %d. Setting heartbeat interval to %d. Current heartbeat timeout: %d.", m.From, heartbeatInterval, r.heartbeatTimeout)
 		}
 	}
 
