@@ -144,7 +144,7 @@ type Config struct {
 	MinElectionMetricsCapacity int
 	ElectionSafetyFactor       int
 	HeartbeatReachabilityGoal  float64
-	K						int64
+	K                          int64
 	OptimizeHeartbeatInterval  bool
 
 	// Storage is the storage for raft. raft generates entries and states to be
@@ -445,8 +445,8 @@ type raft struct {
 	heartbeatReachabilityGoal float64
 	campaignAttemptTimestamp  time.Time
 	lastCampaignTimeTaken     time.Duration
-	lastElectionFailed		  bool
-	K                 int64
+	lastElectionFailed        bool
+	K                         int64
 	optimizeHeartbeatInterval bool
 }
 
@@ -482,8 +482,8 @@ func newRaft(c *Config) *raft {
 		heartbeatStates:             make(map[uint64]*heartbeatState),
 		electionSafetyFactor:        c.ElectionSafetyFactor,
 		heartbeatReachabilityGoal:   c.HeartbeatReachabilityGoal,
-		K:                 c.K,
-		optimizeHeartbeatInterval: c.OptimizeHeartbeatInterval,
+		K:                           c.K,
+		optimizeHeartbeatInterval:   c.OptimizeHeartbeatInterval,
 	}
 
 	cfg, prs, err := confchange.Restore(confchange.Changer{
@@ -1869,44 +1869,47 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 	r.logger.Debugf("Received heartbeat from %d.", m.From)
 
 	r.raftLog.commitTo(m.Commit)
-	var heartbeatInterval int64
+	var heartbeatInterval int64 = -1 // Default to -1 if not optimized
 
+	// If RTT is present, add it to the RTT queue
 	if m.Rtt != nil {
 		r.logger.Debugf("Received RTT from %d: %d ns.", m.From, *m.Rtt)
 		r.followerMetrics.addRTT(time.Duration(*m.Rtt))
-		newMean := r.followerMetrics.getMean()
-		newStdDev := r.followerMetrics.getStdDev()
-		if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
-			baseTimeout := int(newMean.Milliseconds() + int64(r.electionSafetyFactor)*newStdDev.Milliseconds())
-			r.calculateRandomizedElectionTimeout(baseTimeout)
-		}
 	}
-	r.logger.Debugf("Current randomizedElectionTimeout: %d", r.randomizedElectionTimeout)
 
-	
-
+	// If SequenceId and SendTime are present, add SequenceId info to the queue
 	if m.SequenceId != nil && m.SendTime != nil {
 		sequenceId := uint64(*m.SequenceId)
 		timestamp := time.Unix(0, int64(*m.SendTime))
 		r.followerMetrics.addSequenceIdInfo(sequenceId, timestamp)
+	}
 
-		if r.followerMetrics.isSequenceIdQueueGreaterThanMin() {
-			packetLossRate := r.followerMetrics.calculatePacketLossRate()
-			heartbeatInterval = r.calculateHeartbeatInterval(packetLossRate)
-			r.logger.Debugf("Calculated packet loss rate after receiving heartbeat from %d: %f, Using K: %d, optimizeHeartbeatInterval: %t, calculated heartbeat interval: %d.", m.From, packetLossRate, r.K, r.optimizeHeartbeatInterval, heartbeatInterval)
-		} else {
-			heartbeatInterval = -1
-			r.logger.Debugf("Insufficient data to calculate heartbeat interval after receiving heartbeat from %d. Setting heartbeat interval to %d. Current heartbeat timeout: %d.", m.From, heartbeatInterval, r.heartbeatTimeout)
-		}
+	// Check if metrics queues meet the minimum required size
+	isMinBothQueues := r.followerMetrics.isFollowerMetricsQueuesGreaterThanMin()
+	r.logger.Debugf("Metrics Check - isFollowerMetricsQueuesGreaterThanMin: %t (RTT Queue Size: %d, Sequence ID Queue Size: %d, Min Size: %d)",
+		isMinBothQueues, len(r.followerMetrics.rttQueue), len(r.followerMetrics.sequenceIdQueue), r.followerMetrics.minQueueSize)
+
+	if isMinBothQueues {
+		// Calculate the mean and standard deviation of RTT
+		newMean := r.followerMetrics.getMean()
+		newStdDev := r.followerMetrics.getStdDev()
+		baseTimeout := int(newMean.Milliseconds() + int64(r.electionSafetyFactor)*newStdDev.Milliseconds())
+		r.calculateRandomizedElectionTimeout(baseTimeout)
+		r.logger.Debugf("Optimized election timeout to %d ms based on mean RTT and standard deviation.", baseTimeout)
+
+		// Calculate packet loss rate and heartbeat interval
+		packetLossRate := r.followerMetrics.calculatePacketLossRate()
+		heartbeatInterval = r.calculateHeartbeatInterval(packetLossRate)
+		r.logger.Debugf("Calculated packet loss rate after receiving heartbeat from %d: %f, Using K: %d, optimizeHeartbeatInterval: %t, calculated heartbeat interval: %d.",
+			m.From, packetLossRate, r.K, r.optimizeHeartbeatInterval, heartbeatInterval)
+	} else {
+		r.logger.Debugf("Insufficient data to optimize election timeout and heartbeat interval.")
 	}
 
 	r.printFollowerMetrics(r.followerMetrics)
 
-	if heartbeatInterval != -1 {
-		r.logger.Debugf("Replying to %d with heartbeat response; interval set to %d.", m.From, heartbeatInterval)
-	} else {
-		r.logger.Debugf("Replying to %d with heartbeat response; interval not set due to insufficient data.", m.From)
-	}
+	r.logger.Debugf("Current randomizedElectionTimeout: %d", r.randomizedElectionTimeout)
+	r.logger.Debugf("Replying to %d with heartbeat response; interval set to %d.", m.From, heartbeatInterval)
 
 	r.send(pb.Message{
 		To:                m.From,
@@ -2252,8 +2255,6 @@ func (r *raft) calculateHeartbeatInterval(packetLossRate float64) int64 {
 
 	if r.optimizeHeartbeatInterval == false {
 		heartbeatInterval := int64(math.Floor(float64(r.randomizedElectionTimeout) / (float64(r.K) + 1)))
-		r.logger.Debugf("Optimized Heartbeat Interval: %d (randomizedElectionTimeout: %d, K: %d)", 
-			heartbeatInterval, r.randomizedElectionTimeout, r.K)
 		return heartbeatInterval
 	}
 
@@ -2261,15 +2262,13 @@ func (r *raft) calculateHeartbeatInterval(packetLossRate float64) int64 {
 		ceilLogTerm = 1
 		r.logger.Debugf("Packet Loss Rate: %f, setting ceilLogTerm to 1", packetLossRate)
 	} else {
-		logTerm := math.Log(1-r.heartbeatReachabilityGoal)/math.Log(packetLossRate)
+		logTerm := math.Log(1-r.heartbeatReachabilityGoal) / math.Log(packetLossRate)
 		ceilLogTerm = math.Ceil(logTerm)
-		r.logger.Debugf("Packet Loss Rate: %f, Log Term: %f, Ceil Log Term: %f", 
+		r.logger.Debugf("Packet Loss Rate: %f, Log Term: %f, Ceil Log Term: %f",
 			packetLossRate, logTerm, ceilLogTerm)
 	}
 
 	heartbeatInterval := int64(math.Floor(float64(r.randomizedElectionTimeout) / (ceilLogTerm + 1)))
-	r.logger.Debugf("Calculated Heartbeat Interval: %d (randomizedElectionTimeout: %d, ceilLogTerm: %f)", 
-		heartbeatInterval, r.randomizedElectionTimeout, ceilLogTerm)
 
 	return heartbeatInterval
 }
@@ -2342,8 +2341,8 @@ type followerMetrics struct {
 	minQueueSize    int
 }
 
-func (f *followerMetrics) isSequenceIdQueueGreaterThanMin() bool {
-	return len(f.sequenceIdQueue) > f.minQueueSize
+func (f *followerMetrics) isFollowerMetricsQueuesGreaterThanMin() bool {
+	return len(f.rttQueue) > f.minQueueSize && len(f.sequenceIdQueue) > f.minQueueSize
 }
 
 func newfollowerMetrics(maxQueueSize int, minQueueSize int) *followerMetrics {
