@@ -2136,10 +2136,12 @@ func (r *raft) pastElectionTimeout() bool {
 
 func (r *raft) resetRandomizedElectionTimeout() {
 	r.randomizedElectionTimeout = r.electionTimeout + globalRand.Intn(r.electionTimeout)
+	r.logger.Infof("resetRandomizedElectionTimeout: electionTimeout=%d, randomizedElectionTimeout=%d", r.electionTimeout, r.randomizedElectionTimeout)
 }
 
 func (r *raft) calculateRandomizedElectionTimeout(baseTimeout int) {
 	r.randomizedElectionTimeout = baseTimeout + globalRand.Intn(baseTimeout)
+	r.logger.Infof("calculateRandomizedElectionTimeout: baseTimeout=%d, randomizedElectionTimeout=%d", baseTimeout, r.randomizedElectionTimeout)
 }
 
 func (r *raft) sendTimeoutNow(to uint64) {
