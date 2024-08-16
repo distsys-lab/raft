@@ -1927,32 +1927,6 @@ func (r *raft) handleSnapshot(m pb.Message) {
 	var s pb.Snapshot
 	if m.Snapshot != nil {
 		s = *m.Snapshot
-	}
-	sindex, sterm := s.Metadata.Index, s.Metadata.Term
-	if r.restore(s) {
-		r.logger.Infof("%x [commit: %d] restored snapshot [index: %d, term: %d]",
-			r.id, r.raftLog.committed, sindex, sterm)
-		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: r.raftLog.lastIndex()})
-	} else {
-		r.logger.Infof("%x [commit: %d] ignored snapshot [index: %d, term: %d]",
-			r.id, r.raftLog.committed, sindex, sterm)
-		r.send(pb.Message{To: m.From, Type: pb.MsgAppResp, Index: r.raftLog.committed})
-	}
-}
-
-// restore recovers the state machine from a snapshot. It restores the log and the
-// configuration of state machine. If this method returns false, the snapshot was
-// ignored, either because it was obsolete or because of an error.
-func (r *raft) restore(s pb.Snapshot) bool {
-	if s.Metadata.Index <= r.raftLog.committed {
-		return false
-	}
-	if r.state != StateFollower {
-		// This is defense-in-depth: if the leader somehow ended up applying a
-		// snapshot, it could move into a new term without moving into a
-		// follower state. This should never fire, but if it did, we'd have
-		// prevented damage by returning early, so log only a loud warning.
-		//
 		// At the time of writing, the instance is guaranteed to be in follower
 		// state when this method is called.
 		r.logger.Warningf("%x attempted to restore snapshot as leader; should never happen", r.id)
