@@ -1,4 +1,4 @@
-module github.com/distsys-lab/raft
+module github.com/distsys-lab/raft/v3
 
 go 1.21.3
 
