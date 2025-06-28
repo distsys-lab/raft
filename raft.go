@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+
 	//"log"
 
 	"go.etcd.io/raft/v3/confchange"
@@ -443,7 +444,7 @@ type raft struct {
 	heartbeatReachabilityGoal float64
 	campaignAttemptTimestamp  time.Time
 	lastCampaignTimeTaken     time.Duration
-	lastElectionFailed		  bool
+	lastElectionFailed        bool
 }
 
 func newRaft(c *Config) *raft {
@@ -1368,6 +1369,9 @@ func stepLeader(r *raft, m pb.Message) error {
 			return ErrProposalDropped
 		}
 		r.bcastAppend()
+		for _, hbState := range r.heartbeatStates {
+			hbState.elapsed = 0
+		}
 		return nil
 	case pb.MsgReadIndex:
 		// only one voting member (the leader) in the cluster
