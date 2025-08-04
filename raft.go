@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+
 	//"log"
 
 	"go.etcd.io/raft/v3/confchange"
@@ -617,6 +618,7 @@ func (r *raft) send(m pb.Message) {
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer.
 func (r *raft) sendAppend(to uint64) {
+	r.resetHeartbeatElapsed(to)
 	r.maybeSendAppend(to, true)
 }
 
@@ -690,7 +692,6 @@ func (r *raft) maybeSendAppend(to uint64, sendIfEmpty bool) bool {
 		Entries: ents,
 		Commit:  r.raftLog.committed,
 	})
-	r.resetHeartbeatElapsed(to)
 	return true
 }
 
