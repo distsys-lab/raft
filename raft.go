@@ -96,6 +96,10 @@ type lockedRand struct {
 }
 
 func (r *lockedRand) Intn(n int) int {
+	if n <= 0 {
+		// Return 0 for invalid input to prevent panic
+		return 0
+	}
 	r.mu.Lock()
 	v, _ := rand.Int(rand.Reader, big.NewInt(int64(n)))
 	r.mu.Unlock()
@@ -1894,6 +1898,13 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 		newMean := r.followerMetrics.getMean()
 		newStdDev := r.followerMetrics.getStdDev()
 		baseTimeout := int(newMean.Milliseconds() + int64(r.electionSafetyFactor)*newStdDev.Milliseconds())
+
+		// Ensure baseTimeout is reasonable
+		if baseTimeout <= 0 {
+			r.logger.Debugf("Calculated baseTimeout is <= 0 (%d), using electionTimeout instead", baseTimeout)
+			baseTimeout = r.electionTimeout
+		}
+
 		r.calculateRandomizedElectionTimeout(baseTimeout)
 		r.logger.Debugf("Optimized election timeout to %d ms based on mean RTT and standard deviation.", baseTimeout)
 
@@ -2135,11 +2146,21 @@ func (r *raft) pastElectionTimeout() bool {
 }
 
 func (r *raft) resetRandomizedElectionTimeout() {
+	if r.electionTimeout <= 0 {
+		r.logger.Errorf("resetRandomizedElectionTimeout: electionTimeout is <= 0 (%d), using default value", r.electionTimeout)
+		r.randomizedElectionTimeout = 10 // fallback to a safe default
+		return
+	}
 	r.randomizedElectionTimeout = r.electionTimeout + globalRand.Intn(r.electionTimeout)
 	r.logger.Infof("resetRandomizedElectionTimeout: electionTimeout=%d, randomizedElectionTimeout=%d", r.electionTimeout, r.randomizedElectionTimeout)
 }
 
 func (r *raft) calculateRandomizedElectionTimeout(baseTimeout int) {
+	if baseTimeout <= 0 {
+		r.logger.Errorf("calculateRandomizedElectionTimeout: baseTimeout is <= 0 (%d), falling back to electionTimeout", baseTimeout)
+		r.resetRandomizedElectionTimeout()
+		return
+	}
 	r.randomizedElectionTimeout = baseTimeout + globalRand.Intn(baseTimeout)
 	r.logger.Infof("calculateRandomizedElectionTimeout: baseTimeout=%d, randomizedElectionTimeout=%d", baseTimeout, r.randomizedElectionTimeout)
 }
