@@ -1373,7 +1373,7 @@ func stepLeader(r *raft, m pb.Message) error {
 		// Reset the heartbeat elapsed counters for all followers. When the leader receives a client proposal
 		// and appends new log entries, this activity itself confirms the leader's liveness to followers.
 		// Therefore, sending an immediate heartbeat is unnecessary, as the AppendEntries RPC serves as a heartbeat.
-		r.resetHeartbeatElapsed()
+		//r.resetHeartbeatElapsed()
 		r.bcastAppend()
 		return nil
 	case pb.MsgReadIndex:
