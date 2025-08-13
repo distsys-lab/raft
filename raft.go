@@ -26,8 +26,6 @@ import (
 	"sync"
 	"time"
 
-	//"log"
-
 	"go.etcd.io/raft/v3/confchange"
 	"go.etcd.io/raft/v3/quorum"
 	pb "go.etcd.io/raft/v3/raftpb"
@@ -96,10 +94,6 @@ type lockedRand struct {
 }
 
 func (r *lockedRand) Intn(n int) int {
-	if n <= 0 {
-		// Return 0 for invalid input to prevent panic
-		return 0
-	}
 	r.mu.Lock()
 	v, _ := rand.Int(rand.Reader, big.NewInt(int64(n)))
 	r.mu.Unlock()
@@ -144,7 +138,6 @@ type Config struct {
 	// leadership every HeartbeatTick ticks.
 	HeartbeatTick int
 
-	//
 	MaxElectionMetricsCapacity int
 	MinElectionMetricsCapacity int
 	ElectionSafetyFactor       int
@@ -302,10 +295,10 @@ type Config struct {
 
 func (c *Config) validate() error {
 	if c.ID == None {
-		return errors.New("cannot use none as ID")
+		return errors.New("cannot use none as id")
 	}
 	if IsLocalMsgTarget(c.ID) {
-		return errors.New("cannot use local target as ID")
+		return errors.New("cannot use local target as id")
 	}
 
 	if c.HeartbeatTick <= 0 {
@@ -622,7 +615,6 @@ func (r *raft) send(m pb.Message) {
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer.
 func (r *raft) sendAppend(to uint64) {
-	r.resetHeartbeatElapsed(to)
 	r.maybeSendAppend(to, true)
 }
 
@@ -1748,7 +1740,7 @@ func stepCandidate(r *raft, m pb.Message) error {
 		case quorum.VoteWon:
 			if r.state == StatePreCandidate {
 				r.lastCampaignTimeTaken = time.Since(r.campaignAttemptTimestamp)
-				r.logger.Infof("Campaign time taken: %v", r.lastCampaignTimeTaken)
+				r.logger.Debugf("Campaign time taken: %v", r.lastCampaignTimeTaken)
 				r.campaign(campaignElection)
 			} else {
 				r.becomeLeader()
@@ -1761,7 +1753,6 @@ func stepCandidate(r *raft, m pb.Message) error {
 			r.becomeFollower(r.Term, None)
 		}
 	case pb.MsgTimeoutNow:
-		r.logger.Debugf("%x [term %d state %v] ignored MsgTimeoutNow from %x", r.id, r.Term, r.state, m.From)
 	}
 	return nil
 }
@@ -1873,7 +1864,7 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 	r.logger.Debugf("Received heartbeat from %d.", m.From)
 
 	r.raftLog.commitTo(m.Commit)
-	var heartbeatInterval int64 = -1 // Default to -1 if not optimized
+	var heartbeatInterval int64 = -1
 
 	// If RTT is present, add it to the RTT queue
 	if m.Rtt != nil {
@@ -1898,12 +1889,6 @@ func (r *raft) handleHeartbeat(m pb.Message) {
 		newMean := r.followerMetrics.getMean()
 		newStdDev := r.followerMetrics.getStdDev()
 		baseTimeout := int(newMean.Milliseconds() + int64(r.electionSafetyFactor)*newStdDev.Milliseconds())
-
-		// Ensure baseTimeout is reasonable
-		if baseTimeout <= 0 {
-			r.logger.Debugf("Calculated baseTimeout is <= 0 (%d), using electionTimeout instead", baseTimeout)
-			baseTimeout = r.electionTimeout
-		}
 
 		r.calculateRandomizedElectionTimeout(baseTimeout)
 		r.logger.Debugf("Optimized election timeout to %d ms based on mean RTT and standard deviation.", baseTimeout)
@@ -2146,23 +2131,18 @@ func (r *raft) pastElectionTimeout() bool {
 }
 
 func (r *raft) resetRandomizedElectionTimeout() {
-	if r.electionTimeout <= 0 {
-		r.logger.Errorf("resetRandomizedElectionTimeout: electionTimeout is <= 0 (%d), using default value", r.electionTimeout)
-		r.randomizedElectionTimeout = 10 // fallback to a safe default
-		return
-	}
 	r.randomizedElectionTimeout = r.electionTimeout + globalRand.Intn(r.electionTimeout)
-	r.logger.Infof("resetRandomizedElectionTimeout: electionTimeout=%d, randomizedElectionTimeout=%d", r.electionTimeout, r.randomizedElectionTimeout)
+	r.logger.Debugf("resetRandomizedElectionTimeout: electionTimeout=%d, randomizedElectionTimeout=%d", r.electionTimeout, r.randomizedElectionTimeout)
 }
 
 func (r *raft) calculateRandomizedElectionTimeout(baseTimeout int) {
 	if baseTimeout <= 0 {
-		r.logger.Errorf("calculateRandomizedElectionTimeout: baseTimeout is <= 0 (%d), falling back to electionTimeout", baseTimeout)
-		r.resetRandomizedElectionTimeout()
+		r.logger.Debugf("calculateRandomizedElectionTimeout: baseTimeout is <= 0 (%d), falling back to electionTimeout", baseTimeout)
+		r.resetRandomizedElectionTimeout() // Fallback to the default election timeout if baseTimeout is not valid.
 		return
 	}
 	r.randomizedElectionTimeout = baseTimeout + globalRand.Intn(baseTimeout)
-	r.logger.Infof("calculateRandomizedElectionTimeout: baseTimeout=%d, randomizedElectionTimeout=%d", baseTimeout, r.randomizedElectionTimeout)
+	r.logger.Debugf("calculateRandomizedElectionTimeout: baseTimeout=%d, randomizedElectionTimeout=%d", baseTimeout, r.randomizedElectionTimeout)
 }
 
 func (r *raft) sendTimeoutNow(to uint64) {
