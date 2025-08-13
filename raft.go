@@ -1369,6 +1369,11 @@ func stepLeader(r *raft, m pb.Message) error {
 		if !r.appendEntry(m.Entries...) {
 			return ErrProposalDropped
 		}
+
+		// Reset the heartbeat elapsed counters for all followers. When the leader receives a client proposal
+		// and appends new log entries, this activity itself confirms the leader's liveness to followers.
+		// Therefore, sending an immediate heartbeat is unnecessary, as the AppendEntries RPC serves as a heartbeat.
+		r.resetHeartbeatElapsed()
 		r.bcastAppend()
 		return nil
 	case pb.MsgReadIndex:
@@ -2137,7 +2142,7 @@ func (r *raft) resetRandomizedElectionTimeout() {
 
 func (r *raft) calculateRandomizedElectionTimeout(baseTimeout int) {
 	if baseTimeout <= 0 {
-		r.logger.Debugf("calculateRandomizedElectionTimeout: baseTimeout is <= 0 (%d), falling back to electionTimeout", baseTimeout)
+		r.logger.Infof("calculateRandomizedElectionTimeout: baseTimeout is <= 0 (%d), falling back to electionTimeout", baseTimeout)
 		r.resetRandomizedElectionTimeout() // Fallback to the default election timeout if baseTimeout is not valid.
 		return
 	}
@@ -2276,11 +2281,10 @@ func (r *raft) calculateHeartbeatInterval(packetLossRate float64) int64 {
 	return heartbeatInterval
 }
 
-func (r *raft) resetHeartbeatElapsed(id uint64) {
-	if hbState, ok := r.heartbeatStates[id]; ok {
+func (r *raft) resetHeartbeatElapsed() {
+	for id, hbState := range r.heartbeatStates {
 		r.logger.Debugf("Resetting heartbeat elapsed for %d", id)
 		hbState.elapsed = 0
-		r.heartbeatStates[id] = hbState
 	}
 }
 
